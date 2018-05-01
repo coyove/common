@@ -15,10 +15,13 @@ Advanced logging
 Weighted LRU cache
 
 ## rand
-Fast crypto/rand
+Faster crypto/rand
 
 ## session
 Generate session tokens
+
+## slice
+Generic slice manipulation
 
 ## shoco
 Shoco text compression
