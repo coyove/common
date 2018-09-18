@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -20,67 +22,51 @@ const (
 	LvPrint = 99
 )
 
-var (
-	logLevel     = 0
-	fatalAsError = false
-	started      = false
-	logFileOnly  = false
-	logFile      *os.File
-	logCallback  func(ts int64, msg string)
-)
+type Logger struct {
+	logLevel    int
+	logPath     string
+	logFile     *os.File
+	logFileTmp  bytes.Buffer
+	logFileSize int64
+	sync.Mutex
+}
 
-func SetLevel(lv string) int {
+func (l *Logger) SetLevel(lv string) int {
 	switch lv {
 	case "dbg":
-		logLevel = -1
+		l.logLevel = -1
 	case "log":
-		logLevel = 0
+		l.logLevel = 0
 	case "warn":
-		logLevel = 1
+		l.logLevel = 1
 	case "err":
-		logLevel = 2
+		l.logLevel = 2
 	case "off":
-		logLevel = 3
+		l.logLevel = 3
 	case "pp":
-		logLevel = 99
+		l.logLevel = 99
 	default:
 		panic("unexpected log level: " + lv)
 	}
 
-	return logLevel
+	return l.logLevel
 }
 
-func GetLevel() int {
-	return logLevel
+func (l *Logger) GetLevel() int {
+	return l.logLevel
 }
 
-func Redirect(dst interface{}) {
-	switch dst.(type) {
-	case func(int64, string):
-		logCallback = dst.(func(int64, string))
-	case string:
-		fn := dst.(string)
-		if fn[0] == '*' {
-			fn = fn[1:]
-			logFileOnly = false
-		} else {
-			logFileOnly = true
-		}
+func (l *Logger) LogFile(fn string, rotateSize int64) {
+	l.logPath = fn
+	fn += "." + time.Now().UTC().Format("2006-01-02_15-04-05.000")
 
-		logFile, _ = os.Create(fn)
+	var err error
+	l.logFile, err = os.Create(fn)
+	if err != nil {
+		panic(err)
 	}
-}
-
-func TreatFatalAsError(flag bool) {
-	fatalAsError = flag
-}
-
-func timestamp() string {
-	t := time.Now()
-	mil := t.UnixNano() % 1e9
-	mil /= 1e6
-
-	return fmt.Sprintf("%02d%02d/%02d%02d%02d.%03d", t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), mil)
+	l.logFileSize = rotateSize
+	l.logFileTmp.Reset()
 }
 
 func trunc(fn string) string {
@@ -116,22 +102,11 @@ func tryShortenWSAError(err interface{}) (ret string) {
 	return
 }
 
-type msg_t struct {
-	dst     string
-	lead    string
-	ts      int64
-	message string
-}
-
-var msgQueue = make(chan *msg_t)
-
-func print(l string, params ...interface{}) {
-	if !started {
-		return
-	}
-
+func (l *Logger) print(lvs string, params ...interface{}) {
 	_, fn, line, _ := runtime.Caller(2)
-	m := msg_t{lead: fmt.Sprintf("[%s%s:%s(%d)] ", l, timestamp(), trunc(fn), line), ts: time.Now().UnixNano()}
+	now := time.Now()
+	m := csvbuffer{}
+	m.Write(now.Format("2006-01-02 15:04:05.000 MST"), trunc(fn)+":"+strconv.Itoa(line), lvs)
 
 	for _, p := range params {
 		switch p.(type) {
@@ -139,159 +114,71 @@ func print(l string, params ...interface{}) {
 			op := p.(*net.OpError)
 
 			if op.Source == nil && op.Addr == nil {
-				m.message += fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p))
+				m.Write(fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p)))
 			} else {
-				m.message += fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p))
-
-				if op.Source != nil && op.Addr != nil {
-					m.dst, _, _ = net.SplitHostPort(op.Addr.String())
-				}
+				m.Write(fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p)))
 			}
 		case *net.DNSError:
 			op := p.(*net.DNSError)
-
-			if m.message += fmt.Sprintf("DNS lookup err"); op.IsTimeout {
-				m.message += ", timed out"
-			}
-
-			if op.Name != "" {
-				m.message += ": " + op.Name
-			} else {
-				m.message += ", but with an empty name (?)"
-			}
+			m.Write(fmt.Sprintf("DNS lookup error timeout: %v, name: %s", op.IsTimeout, op.Name))
 		default:
-			m.message += fmt.Sprintf("%+v", p)
+			m.Write(fmt.Sprintf("%+v", p))
 		}
 	}
 
-	if l == "X" {
-		// immediately print fatal message
-		printRaw(0, m.lead+m.message, nil)
-		return
-	}
+	m.NewLine()
 
-	msgQueue <- &m
-}
+	if l.logFile != nil {
+		l.logFileTmp.Write(m.Bytes())
 
-func printRaw(ts int64, str string, buf *bytes.Buffer) {
-	if logFile != nil {
-		if buf != nil {
-			buf.WriteString(str)
-			buf.WriteString("\n")
+		l.Lock()
+		if l.logFileTmp.Len() > 4096 {
+			l.logFile.Write(l.logFileTmp.Bytes())
+			l.logFileTmp.Reset()
 
-			if buf.Len() > 16*1024 {
-				logFile.Write(buf.Bytes())
-				buf.Reset()
-			}
-		} else {
-			logFile.Write([]byte(str))
-		}
-	}
-
-	if logCallback != nil {
-		logCallback(ts, str)
-	} else if !logFileOnly {
-		fmt.Println(str)
-	}
-}
-
-func printLoop() {
-	var count, nop int
-	var lastMsg *msg_t
-	var lastTime = time.Now()
-	logBuffer := &bytes.Buffer{}
-
-	print := func(m *msg_t) {
-		if lastMsg != nil && m != nil {
-			// this message is similar to the last one
-			if (m.dst != "" && m.dst == lastMsg.dst) || m.message == lastMsg.message {
-				if time.Now().Sub(lastTime).Seconds() < 5.0 {
-					count++
-					return
-				}
-
-				// though similar, 5s timeframe is over, we should print this message anyway
+			if st, _ := l.logFile.Stat(); st.Size() > l.logFileSize {
+				l.logFile.Sync()
+				l.logFile.Close()
+				l.LogFile(l.logPath, l.logFileSize)
 			}
 		}
-
-		if count > 0 {
-			printRaw(lastMsg.ts, fmt.Sprintf(strings.Repeat(" ", len(lastMsg.lead))+"... %d similar message(s)", count), logBuffer)
-		}
-
-		if lastMsg == nil && m == nil {
-			return
-		}
-
-		if m != nil {
-			printRaw(m.ts, m.lead+m.message, logBuffer)
-			lastMsg = m
-		}
-
-		lastTime, count, nop = time.Now(), 0, 0
-	}
-
-	for {
-	L:
-		for {
-			select {
-			case m := <-msgQueue:
-				print(m)
-			default:
-				if nop++; nop > 10 {
-					print(nil)
-				}
-				// nothing in queue to print, quit loop
-				break L
-			}
-		}
-
-		time.Sleep(100 * time.Millisecond)
+		l.Unlock()
+	} else {
+		os.Stderr.Write(m.Bytes())
 	}
 }
 
-func Start() {
-	if started {
-		return
-	}
-
-	started = true
-	go printLoop()
-}
-
-func D(params ...interface{}) {
-	if logLevel <= -1 {
-		print("_", params...)
+func (l *Logger) D(params ...interface{}) {
+	if l.logLevel <= -1 {
+		l.print("  DEBUG  ", params...)
 	}
 }
 
-func L(params ...interface{}) {
-	if logLevel <= 0 {
-		print("_", params...)
+func (l *Logger) L(params ...interface{}) {
+	if l.logLevel <= 0 {
+		l.print("  LOG  ", params...)
 	}
 }
 
-func W(params ...interface{}) {
-	if logLevel <= 1 {
-		print("W", params...)
+func (l *Logger) W(params ...interface{}) {
+	if l.logLevel <= 1 {
+		l.print("  WARNING  ", params...)
 	}
 }
 
-func E(params ...interface{}) {
-	if logLevel <= 2 {
-		print("E", params...)
+func (l *Logger) E(params ...interface{}) {
+	if l.logLevel <= 2 {
+		l.print("  ERROR  ", params...)
 	}
 }
 
-func P(params ...interface{}) {
-	if logLevel == 99 {
-		print("P", params...)
+func (l *Logger) P(params ...interface{}) {
+	if l.logLevel == 99 {
+		l.print("  PPRINT  ", params...)
 	}
 }
 
-func F(params ...interface{}) {
-	print("X", params...)
-
-	if !fatalAsError {
-		os.Exit(1)
-	}
+func (l *Logger) F(params ...interface{}) {
+	l.print("  FATAL  ", params...)
+	os.Exit(1)
 }
