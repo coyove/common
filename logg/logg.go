@@ -45,6 +45,7 @@ type Logger struct {
 	logFile     *os.File
 	logFileTmp  bytes.Buffer
 	logFileSize int64
+	lastFlush   int64
 	start       int64
 	sync.Mutex
 }
@@ -236,10 +237,19 @@ func (l *Logger) print(lvs string, params ...interface{}) {
 
 	if l.logFile != nil {
 		l.logFileTmp.Write(m.Bytes())
+		l.flush(lvs == LvFATALText)
+	} else {
+		os.Stderr.Write(m.Bytes())
+	}
+}
 
-		l.Lock()
-		if l.logFileTmp.Len() > 4096 {
+func (l *Logger) flush(force bool) {
+	l.Lock()
+	now := time.Now().UnixNano()
+	if l.logFileTmp.Len() > 4096 || now-l.lastFlush > 1e9 || force {
+		if l.logFile != nil {
 			l.logFile.Write(l.logFileTmp.Bytes())
+			l.lastFlush = now
 			l.logFileTmp.Reset()
 
 			if st, _ := l.logFile.Stat(); st.Size() > l.logFileSize {
@@ -248,43 +258,50 @@ func (l *Logger) print(lvs string, params ...interface{}) {
 				l.LogFile(l.logPath, l.logFileSize)
 			}
 		}
-		l.Unlock()
-	} else {
-		os.Stderr.Write(m.Bytes())
 	}
+	l.Unlock()
 }
+
+var (
+	LvFATALText   = "  FATAL  "
+	LvPPRINTText  = "  PPRINT  "
+	LvERRORText   = "  ERROR  "
+	LvWARNINGText = "  WARNING  "
+	LvLOGText     = "  LOG  "
+	LvDEBUGText   = "  DEBUG  "
+)
 
 func (l *Logger) D(params ...interface{}) {
 	if l.logLevel <= -1 {
-		l.print("  DEBUG  ", params...)
+		l.print(LvDEBUGText, params...)
 	}
 }
 
 func (l *Logger) L(params ...interface{}) {
 	if l.logLevel <= 0 {
-		l.print("  LOG  ", params...)
+		l.print(LvLOGText, params...)
 	}
 }
 
 func (l *Logger) W(params ...interface{}) {
 	if l.logLevel <= 1 {
-		l.print("  WARNING  ", params...)
+		l.print(LvWARNINGText, params...)
 	}
 }
 
 func (l *Logger) E(params ...interface{}) {
 	if l.logLevel <= 2 {
-		l.print("  ERROR  ", params...)
+		l.print(LvERRORText, params...)
 	}
 }
 
 func (l *Logger) P(params ...interface{}) {
 	if l.logLevel == 99 {
-		l.print("  PPRINT  ", params...)
+		l.print(LvPPRINTText, params...)
 	}
 }
 
 func (l *Logger) F(params ...interface{}) {
-	l.print("  FATAL  ", params...)
+	l.print(LvFATALText, params...)
 	os.Exit(1)
 }
