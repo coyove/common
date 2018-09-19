@@ -2,6 +2,7 @@ package logg
 
 import (
 	"bytes"
+	"encoding/csv"
 	"fmt"
 	"net"
 	"os"
@@ -22,12 +23,29 @@ const (
 	LvPrint = 99
 )
 
+type Format byte
+
+const (
+	FmtLongTime Format = 1 + iota
+	FmtLongTimeUTC
+	FmtShortTime
+	FmtShortTimeSec
+	FmtElapsedTime
+	FmtElapsedTimeSec
+	FmtLongFile
+	FmtShortFile
+	FmtLevel
+	FmtGoroutine
+)
+
 type Logger struct {
 	logLevel    int
 	logPath     string
+	formats     []Format
 	logFile     *os.File
 	logFileTmp  bytes.Buffer
 	logFileSize int64
+	start       int64
 	sync.Mutex
 }
 
@@ -52,13 +70,72 @@ func (l *Logger) SetLevel(lv string) int {
 	return l.logLevel
 }
 
+func (l *Logger) SetFormats(formats ...Format) {
+	l.formats = formats
+	l.start = time.Now().UnixNano()
+}
+
+func (l *Logger) Parse(config string) {
+	parts := strings.Split(config, ",")
+	if len(parts) == 0 {
+		return
+	}
+
+	x := parts[0]
+	if strings.Contains(x, ":") {
+		fn := x[strings.Index(x, ":")+1:]
+		x = x[:len(x)-len(fn)-1]
+		if parts := strings.Split(fn, "+"); len(parts) == 2 {
+			if rs, err := strconv.Atoi(parts[0]); err == nil {
+				l.LogFile(parts[1], int64(rs))
+			}
+		} else {
+			l.LogFile(fn, 1024*1024)
+		}
+	}
+	l.SetLevel(x)
+
+	r := csv.NewReader(strings.NewReader(config))
+	parts, _ = r.Read()
+	formats := make([]Format, 0, len(parts))
+
+	for i := 1; i < len(parts); i++ {
+		switch x := parts[i]; x {
+		case "longtime", "lt":
+			formats = append(formats, FmtLongTime)
+		case "longtimeutc", "ltu":
+			formats = append(formats, FmtLongTimeUTC)
+		case "shorttime", "st":
+			formats = append(formats, FmtShortTime)
+		case "shorttimesec", "sts":
+			formats = append(formats, FmtShortTimeSec)
+		case "elapsedtime", "et":
+			formats = append(formats, FmtElapsedTime)
+		case "elapsedtimesec", "ets":
+			formats = append(formats, FmtElapsedTimeSec)
+		case "shortfile", "sf":
+			formats = append(formats, FmtShortFile)
+		case "longfile", "lf":
+			formats = append(formats, FmtLongFile)
+		case "level", "lv", "l":
+			formats = append(formats, FmtLevel)
+		case "goroutine", "go", "g":
+			formats = append(formats, FmtGoroutine)
+		}
+	}
+
+	if len(formats) > 0 {
+		l.SetFormats(formats...)
+	}
+}
+
 func (l *Logger) GetLevel() int {
 	return l.logLevel
 }
 
 func (l *Logger) LogFile(fn string, rotateSize int64) {
 	l.logPath = fn
-	fn += "." + time.Now().UTC().Format("2006-01-02_15-04-05.000")
+	fn += "." + time.Now().UTC().Format("2006-01-02-15-04-05-000")
 
 	var err error
 	l.logFile, err = os.Create(fn)
@@ -106,7 +183,36 @@ func (l *Logger) print(lvs string, params ...interface{}) {
 	_, fn, line, _ := runtime.Caller(2)
 	now := time.Now()
 	m := csvbuffer{}
-	m.Write(now.Format("2006-01-02 15:04:05.000 MST"), trunc(fn)+":"+strconv.Itoa(line), lvs)
+	for _, f := range l.formats {
+		switch f {
+		case FmtLongTime:
+			m.Write(now.Format("2006-01-02 15:04:05.000 MST"))
+		case FmtLongTimeUTC:
+			m.Write(now.UTC().Format("2006-01-02 15:04:05.000"))
+		case FmtLongFile:
+			m.Write(fn + ":" + strconv.Itoa(line))
+		case FmtShortFile:
+			m.Write(trunc(fn) + ":" + strconv.Itoa(line))
+		case FmtShortTime:
+			now = now.UTC()
+			m.Write(fmt.Sprintf("%d%02d%02d%02d%02d%02d.%03d", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), (now.UnixNano()%1e9)/1e6))
+		case FmtShortTimeSec:
+			now = now.UTC()
+			m.Write(fmt.Sprintf("%d%02d%02d%02d%02d%02d", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second()))
+		case FmtElapsedTime:
+			m.Write(strconv.FormatFloat(float64(time.Now().UnixNano()-l.start)/1e9, 'f', 6, 64))
+		case FmtElapsedTimeSec:
+			m.Write(strconv.FormatInt((time.Now().UnixNano()-l.start)/1e9, 10))
+		case FmtLevel:
+			m.Write(lvs)
+		case FmtGoroutine:
+			buf := [32]byte{}
+			runtime.Stack(buf[:], false)
+			startidx := bytes.Index(buf[:], []byte(" "))
+			endidx := bytes.Index(buf[:], []byte("["))
+			m.Write(string(buf[startidx+1 : endidx-1]))
+		}
+	}
 
 	for _, p := range params {
 		switch p.(type) {
