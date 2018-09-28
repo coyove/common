@@ -272,36 +272,54 @@ var (
 )
 
 func (l *Logger) D(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	if l.logLevel <= -1 {
 		l.print(LvDEBUGText, params...)
 	}
 }
 
 func (l *Logger) L(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	if l.logLevel <= 0 {
 		l.print(LvLOGText, params...)
 	}
 }
 
 func (l *Logger) W(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	if l.logLevel <= 1 {
 		l.print(LvWARNINGText, params...)
 	}
 }
 
 func (l *Logger) E(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	if l.logLevel <= 2 {
 		l.print(LvERRORText, params...)
 	}
 }
 
 func (l *Logger) P(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	if l.logLevel == 99 {
 		l.print(LvPPRINTText, params...)
 	}
 }
 
 func (l *Logger) F(params ...interface{}) {
+	if l == nil {
+		return
+	}
 	l.print(LvFATALText, params...)
 	os.Exit(1)
 }
