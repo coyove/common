@@ -180,7 +180,7 @@ func tryShortenWSAError(err interface{}) (ret string) {
 	return
 }
 
-func (l *Logger) print(lvs string, params ...interface{}) {
+func (l *Logger) print(lvs string, format string, params ...interface{}) {
 	_, fn, line, _ := runtime.Caller(2)
 	now := time.Now()
 	m := csvbuffer{}
@@ -215,24 +215,24 @@ func (l *Logger) print(lvs string, params ...interface{}) {
 		}
 	}
 
-	for _, p := range params {
+	for i := 0; i < len(params); i++ {
+		p := params[i]
 		switch p.(type) {
 		case *net.OpError:
 			op := p.(*net.OpError)
 
 			if op.Source == nil && op.Addr == nil {
-				m.Write(fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p)))
+				params[i] = fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p))
 			} else {
-				m.Write(fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p)))
+				params[i] = fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p))
 			}
 		case *net.DNSError:
 			op := p.(*net.DNSError)
-			m.Write(fmt.Sprintf("DNS lookup error timeout: %v, name: %s", op.IsTimeout, op.Name))
-		default:
-			m.Write(fmt.Sprintf("%+v", p))
+			params[i] = fmt.Sprintf("DNS lookup error timeout: %v, name: %s", op.IsTimeout, op.Name)
 		}
 	}
 
+	m.Write(fmt.Sprintf(format, params...))
 	m.NewLine()
 
 	if l.logFile != nil {
@@ -267,59 +267,59 @@ var (
 	LvPPRINTText  = "  PPRINT  "
 	LvERRORText   = "  ERROR  "
 	LvWARNINGText = "  WARNING  "
-	LvLOGText     = "  LOG  "
-	LvDEBUGText   = "  DEBUG  "
+	LvLOGText     = "  INFO  "
+	LvDEBUGText   = " DEBUG "
 )
 
-func (l *Logger) D(params ...interface{}) {
+func (l *Logger) D(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
 	if l.logLevel <= -1 {
-		l.print(LvDEBUGText, params...)
+		l.print(LvDEBUGText, format, params...)
 	}
 }
 
-func (l *Logger) L(params ...interface{}) {
+func (l *Logger) L(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
 	if l.logLevel <= 0 {
-		l.print(LvLOGText, params...)
+		l.print(LvLOGText, format, params...)
 	}
 }
 
-func (l *Logger) W(params ...interface{}) {
+func (l *Logger) W(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
 	if l.logLevel <= 1 {
-		l.print(LvWARNINGText, params...)
+		l.print(LvWARNINGText, format, params...)
 	}
 }
 
-func (l *Logger) E(params ...interface{}) {
+func (l *Logger) E(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
 	if l.logLevel <= 2 {
-		l.print(LvERRORText, params...)
+		l.print(LvERRORText, format, params...)
 	}
 }
 
-func (l *Logger) P(params ...interface{}) {
+func (l *Logger) P(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
 	if l.logLevel == 99 {
-		l.print(LvPPRINTText, params...)
+		l.print(LvPPRINTText, format, params...)
 	}
 }
 
-func (l *Logger) F(params ...interface{}) {
+func (l *Logger) F(format string, params ...interface{}) {
 	if l == nil {
 		return
 	}
-	l.print(LvFATALText, params...)
+	l.print(LvFATALText, format, params...)
 	os.Exit(1)
 }
