@@ -136,7 +136,7 @@ func (l *Logger) GetLevel() int {
 
 func (l *Logger) LogFile(fn string, rotateSize int64) {
 	l.logPath = fn
-	fn += "." + time.Now().UTC().Format("2006-01-02-15-04-05-000")
+	fn += "." + time.Now().UTC().Format("2006-01-02_15-04-05.000")
 
 	var err error
 	l.logFile, err = os.Create(fn)
