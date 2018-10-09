@@ -271,6 +271,13 @@ var (
 	LvDEBUGText   = " DEBUG "
 )
 
+func (l *Logger) If(b bool) *Logger {
+	if b {
+		return l
+	}
+	return nil
+}
+
 func (l *Logger) D(format string, params ...interface{}) {
 	if l == nil {
 		return
