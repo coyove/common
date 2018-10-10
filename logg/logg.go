@@ -203,7 +203,7 @@ func tryShortenWSAError(err interface{}) (ret string) {
 }
 
 func (l *Logger) print(lvs string, format string, params ...interface{}) {
-	_, fn, line, _ := runtime.Caller(2)
+	_, fn, line, _ := runtime.Caller(3)
 	now := time.Now()
 	m := csvbuffer{}
 	for _, f := range l.formats {
