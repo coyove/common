@@ -45,38 +45,41 @@ const (
 )
 
 type Logger struct {
-	Writer      io.Writer
-	logLevel    _Level
-	logPath     string
-	formats     []_Format
-	logFile     *os.File
-	logFileTmp  bytes.Buffer
-	logFileSize int64
-	lastFlush   int64
-	start       int64
+	Writer       io.Writer
+	logLevel     _Level
+	ignoreLevels []_Level
+	logPath      string
+	formats      []_Format
+	logFile      *os.File
+	logFileTmp   bytes.Buffer
+	logFileSize  int64
+	lastFlush    int64
+	start        int64
 	sync.Mutex
 }
 
+var (
+	LvTexts  = []string{"FATAL   ", "ERROR   ", "WARNING ", "INFO    ", "LOG     ", "DEBUG   ", "DEBUG0  "}
+	lvlookup = map[string]_Level{"dbg0": LvDebug0, "dbg": LvDebug, "info": LvInfo, "log": LvLog, "warn": LvWarning, "err": LvError, "fatal": LvFatal, "off": LvOff}
+)
+
 func (l *Logger) SetLevel(lv string) _Level {
-	switch lv {
-	case "dbg0":
-		l.logLevel = LvDebug0
-	case "dbg":
-		l.logLevel = LvDebug
-	case "info":
-		l.logLevel = LvInfo
-	case "log":
-		l.logLevel = LvLog
-	case "warn":
-		l.logLevel = LvWarning
-	case "err":
-		l.logLevel = LvError
-	case "fatal":
-		l.logLevel = LvFatal
-	case "off":
-		l.logLevel = LvOff
-	default:
-		panic("unexpected log level: " + lv)
+	l.ignoreLevels = nil
+	for i, lv := range strings.Split(lv, "^") {
+		n, ok := lvlookup[lv]
+		if !ok {
+			panic("unexpected log level: " + lv)
+		}
+
+		if i == 0 {
+			l.logLevel = n
+		} else {
+			if l.ignoreLevels == nil {
+				l.ignoreLevels = []_Level{n}
+			} else {
+				l.ignoreLevels = append(l.ignoreLevels, n)
+			}
+		}
 	}
 
 	return l.logLevel
@@ -291,10 +294,6 @@ func (l *Logger) flush(force bool) {
 	l.Unlock()
 }
 
-var (
-	LvTexts = []string{"FATAL   ", "ERROR   ", "WARNING ", "INFO    ", "LOG     ", "DEBUG   ", "DEBUG0  "}
-)
-
 func (l *Logger) If(b bool) *Logger {
 	if b {
 		return l
@@ -305,6 +304,11 @@ func (l *Logger) If(b bool) *Logger {
 func (l *Logger) level(lv _Level, format string, params ...interface{}) *Logger {
 	if l == nil {
 		return nil
+	}
+	for _, n := range l.ignoreLevels {
+		if n == lv {
+			return l
+		}
 	}
 	if l.logLevel <= lv {
 		l.print(LvTexts[LvOff-lv-1], format, params...)
