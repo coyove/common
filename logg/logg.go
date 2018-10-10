@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -14,19 +15,23 @@ import (
 	"time"
 )
 
+type _Level int
+
 const (
-	LvDebug = iota - 1
+	LvDebug0 _Level = iota - 2
+	LvDebug
 	LvLog
+	LvInfo
 	LvWarning
 	LvError
+	LvFatal
 	LvOff
-	LvPrint = 99
 )
 
-type Format byte
+type _Format byte
 
 const (
-	FmtLongTime Format = 1 + iota
+	FmtLongTime _Format = 1 + iota
 	FmtLongTimeUTC
 	FmtShortTime
 	FmtShortTimeSec
@@ -36,12 +41,14 @@ const (
 	FmtShortFile
 	FmtLevel
 	FmtGoroutine
+	FmtVoid
 )
 
 type Logger struct {
-	logLevel    int
+	Writer      io.Writer
+	logLevel    _Level
 	logPath     string
-	formats     []Format
+	formats     []_Format
 	logFile     *os.File
 	logFileTmp  bytes.Buffer
 	logFileSize int64
@@ -50,20 +57,24 @@ type Logger struct {
 	sync.Mutex
 }
 
-func (l *Logger) SetLevel(lv string) int {
+func (l *Logger) SetLevel(lv string) _Level {
 	switch lv {
+	case "dbg0":
+		l.logLevel = LvDebug0
 	case "dbg":
-		l.logLevel = -1
+		l.logLevel = LvDebug
+	case "info":
+		l.logLevel = LvInfo
 	case "log":
-		l.logLevel = 0
+		l.logLevel = LvLog
 	case "warn":
-		l.logLevel = 1
+		l.logLevel = LvWarning
 	case "err":
-		l.logLevel = 2
+		l.logLevel = LvError
+	case "fatal":
+		l.logLevel = LvFatal
 	case "off":
-		l.logLevel = 3
-	case "pp":
-		l.logLevel = 99
+		l.logLevel = LvOff
 	default:
 		panic("unexpected log level: " + lv)
 	}
@@ -71,15 +82,14 @@ func (l *Logger) SetLevel(lv string) int {
 	return l.logLevel
 }
 
-func (l *Logger) SetFormats(formats ...Format) {
-	l.formats = formats
+func NewLogger(config string) *Logger {
+	l := &Logger{}
+	l.formats = []_Format{FmtLongTime, FmtShortFile, FmtLevel}
 	l.start = time.Now().UnixNano()
-}
 
-func (l *Logger) Parse(config string) {
 	parts := strings.Split(config, ",")
 	if len(parts) == 0 {
-		return
+		return l
 	}
 
 	x := parts[0]
@@ -98,7 +108,7 @@ func (l *Logger) Parse(config string) {
 
 	r := csv.NewReader(strings.NewReader(config))
 	parts, _ = r.Read()
-	formats := make([]Format, 0, len(parts))
+	formats := make([]_Format, 0, len(parts))
 
 	for i := 1; i < len(parts); i++ {
 		switch x := parts[i]; x {
@@ -122,19 +132,28 @@ func (l *Logger) Parse(config string) {
 			formats = append(formats, FmtLevel)
 		case "goroutine", "go", "g":
 			formats = append(formats, FmtGoroutine)
+		case "void":
+			formats = append(formats, FmtVoid)
 		}
 	}
 
 	if len(formats) > 0 {
-		l.SetFormats(formats...)
+		l.formats = formats
 	}
+
+	return l
 }
 
-func (l *Logger) GetLevel() int {
+func (l *Logger) GetLevel() _Level {
 	return l.logLevel
 }
 
 func (l *Logger) LogFile(fn string, rotateSize int64) {
+	if l.logFile != nil {
+		l.logFile.Sync()
+		l.logFile.Close()
+	}
+
 	l.logPath = fn
 	fn += "." + time.Now().UTC().Format("2006-01-02_15-04-05.000")
 
@@ -217,27 +236,39 @@ func (l *Logger) print(lvs string, format string, params ...interface{}) {
 
 	for i := 0; i < len(params); i++ {
 		p := params[i]
-		switch p.(type) {
+		x := ""
+		switch op := p.(type) {
 		case *net.OpError:
-			op := p.(*net.OpError)
-
 			if op.Source == nil && op.Addr == nil {
-				params[i] = fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p))
+				x = fmt.Sprintf("%s, %s", op.Op, tryShortenWSAError(p))
 			} else {
-				params[i] = fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p))
+				x = fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p))
+			}
+			if format == "" {
+				m.Write(x)
+			} else {
+				params[i] = x
 			}
 		case *net.DNSError:
-			op := p.(*net.DNSError)
-			params[i] = fmt.Sprintf("DNS lookup error timeout: %v, name: %s", op.IsTimeout, op.Name)
+			x = fmt.Sprintf("DNS lookup failed: %v", op)
+			if format == "" {
+				m.Write(x)
+			} else {
+				params[i] = x
+			}
 		}
 	}
 
-	m.Write(fmt.Sprintf(format, params...))
+	if format != "" {
+		m.Write(fmt.Sprintf(format, params...))
+	}
 	m.NewLine()
 
 	if l.logFile != nil {
 		l.logFileTmp.Write(m.Bytes())
-		l.flush(lvs == LvFATALText)
+		l.flush(lvs == LvTexts[0])
+	} else if l.Writer != nil {
+		l.Writer.Write(m.Bytes())
 	} else {
 		os.Stderr.Write(m.Bytes())
 	}
@@ -253,8 +284,6 @@ func (l *Logger) flush(force bool) {
 			l.logFileTmp.Reset()
 
 			if st, _ := l.logFile.Stat(); st.Size() > l.logFileSize {
-				l.logFile.Sync()
-				l.logFile.Close()
 				l.LogFile(l.logPath, l.logFileSize)
 			}
 		}
@@ -263,12 +292,7 @@ func (l *Logger) flush(force bool) {
 }
 
 var (
-	LvFATALText   = "  FATAL  "
-	LvPPRINTText  = "  PPRINT  "
-	LvERRORText   = "  ERROR  "
-	LvWARNINGText = "  WARNING  "
-	LvLOGText     = "  INFO  "
-	LvDEBUGText   = " DEBUG "
+	LvTexts = []string{"FATAL   ", "ERROR   ", "WARNING ", "INFO    ", "LOG     ", "DEBUG   ", "DEBUG0  "}
 )
 
 func (l *Logger) If(b bool) *Logger {
@@ -278,55 +302,30 @@ func (l *Logger) If(b bool) *Logger {
 	return nil
 }
 
-func (l *Logger) D(format string, params ...interface{}) {
+func (l *Logger) level(lv _Level, format string, params ...interface{}) *Logger {
 	if l == nil {
-		return
+		return nil
 	}
-	if l.logLevel <= -1 {
-		l.print(LvDEBUGText, format, params...)
+	if l.logLevel <= lv {
+		l.print(LvTexts[LvOff-lv-1], format, params...)
 	}
+	if lv == LvFatal {
+		os.Exit(1)
+	}
+	return l
 }
 
-func (l *Logger) L(format string, params ...interface{}) {
-	if l == nil {
-		return
-	}
-	if l.logLevel <= 0 {
-		l.print(LvLOGText, format, params...)
-	}
-}
-
-func (l *Logger) W(format string, params ...interface{}) {
-	if l == nil {
-		return
-	}
-	if l.logLevel <= 1 {
-		l.print(LvWARNINGText, format, params...)
-	}
-}
-
-func (l *Logger) E(format string, params ...interface{}) {
-	if l == nil {
-		return
-	}
-	if l.logLevel <= 2 {
-		l.print(LvERRORText, format, params...)
-	}
-}
-
-func (l *Logger) P(format string, params ...interface{}) {
-	if l == nil {
-		return
-	}
-	if l.logLevel == 99 {
-		l.print(LvPPRINTText, format, params...)
-	}
-}
-
-func (l *Logger) F(format string, params ...interface{}) {
-	if l == nil {
-		return
-	}
-	l.print(LvFATALText, format, params...)
-	os.Exit(1)
-}
+func (l *Logger) Dbg0f(f string, a ...interface{}) *Logger  { return l.level(LvDebug0, f, a...) }
+func (l *Logger) Dbg0(a ...interface{}) *Logger             { return l.level(LvDebug0, "", a...) }
+func (l *Logger) Dbgf(f string, a ...interface{}) *Logger   { return l.level(LvDebug, f, a...) }
+func (l *Logger) Dbg(a ...interface{}) *Logger              { return l.level(LvDebug, "", a...) }
+func (l *Logger) Logf(f string, a ...interface{}) *Logger   { return l.level(LvLog, f, a...) }
+func (l *Logger) Log(a ...interface{}) *Logger              { return l.level(LvLog, "", a...) }
+func (l *Logger) Infof(f string, a ...interface{}) *Logger  { return l.level(LvInfo, f, a...) }
+func (l *Logger) Info(a ...interface{}) *Logger             { return l.level(LvInfo, "", a...) }
+func (l *Logger) Warnf(f string, a ...interface{}) *Logger  { return l.level(LvWarning, f, a...) }
+func (l *Logger) Warn(a ...interface{}) *Logger             { return l.level(LvWarning, "", a...) }
+func (l *Logger) Errorf(f string, a ...interface{}) *Logger { return l.level(LvError, f, a...) }
+func (l *Logger) Error(a ...interface{}) *Logger            { return l.level(LvError, "", a...) }
+func (l *Logger) Fatalf(f string, a ...interface{}) *Logger { return l.level(LvFatal, f, a...) }
+func (l *Logger) Fatal(a ...interface{}) *Logger            { return l.level(LvFatal, "", a...) }
