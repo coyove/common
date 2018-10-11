@@ -59,7 +59,7 @@ type Logger struct {
 }
 
 var (
-	LvTexts  = []string{"FATAL   ", "ERROR   ", "WARNING ", "INFO    ", "LOG     ", "DEBUG   ", "DEBUG0  "}
+	LvTexts  = []string{" FATAL ", " ERROR ", " WARNING ", " INFO ", " LOG ", " DEBUG ", " DEBUG0 "}
 	lvlookup = map[string]_Level{"dbg0": LvDebug0, "dbg": LvDebug, "info": LvInfo, "log": LvLog, "warn": LvWarning, "err": LvError, "fatal": LvFatal, "off": LvOff}
 )
 
@@ -247,18 +247,18 @@ func (l *Logger) print(lvs string, format string, params ...interface{}) {
 			} else {
 				x = fmt.Sprintf("%s %v, %s", op.Op, op.Addr, tryShortenWSAError(p))
 			}
-			if format == "" {
-				m.Write(x)
-			} else {
-				params[i] = x
-			}
+			params[i] = x
 		case *net.DNSError:
 			x = fmt.Sprintf("DNS lookup failed: %v", op)
+			params[i] = x
+		default:
 			if format == "" {
-				m.Write(x)
-			} else {
-				params[i] = x
+				x = fmt.Sprintf("%v", op)
 			}
+		}
+
+		if format == "" {
+			m.Write(x)
 		}
 	}
 
