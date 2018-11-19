@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-const bufferLen = 2000 // don't exceed 1<<32-1 and keep an integral multiple of 16 bytes
+const bufferLen = 200 // don't exceed 1<<32-1 and keep an integral multiple of 16 bytes
 const budget = (1 << 20) / bufferLen
 
 // Rand is a concurrent random number generator struct
@@ -55,7 +55,9 @@ func (src *Rand) Uint64() uint64 {
 			}
 			src.counter = 0
 		} else {
-			src.block.Encrypt(src.buffer[:], src.buffer[:])
+			for b := 0; b < bufferLen/16; b++ {
+				src.block.Encrypt(src.buffer[b*16:], src.buffer[b*16:])
+			}
 		}
 
 		src.off = 0
@@ -142,7 +144,10 @@ func (src *Rand) Read(buf []byte) error {
 			}
 			src.counter = 0
 		} else {
-			src.block.Encrypt(src.buffer[:], src.buffer[:])
+			for b := 0; b < bufferLen/16; b++ {
+				src.block.Encrypt(src.buffer[b*16:], src.buffer[b*16:])
+			}
+
 		}
 
 		offStart, offEnd = 0, n
