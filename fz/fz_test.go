@@ -29,22 +29,16 @@ func TestBlock(t *testing.T) {
 }
 
 func BenchmarkBTree(b *testing.B) {
-	//	tr.ReplaceOrInsert(pair{0, 0})
-	//	tr.ReplaceOrInsert(pair{1, 1})
-	//	tr.ReplaceOrInsert(pair{2, 2})
-	//	tr.ReplaceOrInsert(pair{3, 3})
-	//	tr.ReplaceOrInsert(pair{4, 4})
-
 	r := rand.New()
 	for i := 0; i < b.N; i++ {
 		m := map[uint64]uint64{}
-		for i := 0; i < 20; i++ {
+		for i := 0; i < 2000; i++ {
 			m[uint64(uint32(r.Uint64()))] = uint64(uint32(r.Uint64()))
 		}
 
 		tr := NewTree()
 		for k, v := range m {
-			tr.ReplaceOrInsert(pair{k, v})
+			tr.Put(pair{k, v})
 		}
 
 		for k, v := range m {
@@ -52,6 +46,10 @@ func BenchmarkBTree(b *testing.B) {
 			if v2.value != v {
 				b.Fatal(v2, v)
 			}
+		}
+
+		if tr.Len() != len(m) {
+			b.Fatal()
 		}
 	}
 
