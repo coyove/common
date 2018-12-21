@@ -19,7 +19,7 @@ var (
 )
 
 const superBlockSize = 64
-const nodeBlockSize = 8 + maxPairs*24 + maxChildren*8
+const nodeBlockSize = 16 + maxItems*24 + maxChildren*8
 
 type SuperBlock struct {
 	magic     [4]byte
@@ -32,15 +32,37 @@ type SuperBlock struct {
 	rootNode  int64
 	superHash uint64
 
-	_fd *os.File
+	_fd         *os.File
+	_dirtyNodes map[*nodeBlock]bool
+	_root       *nodeBlock
 }
 
 type nodeBlock struct {
-	magic        [4]byte
-	itemSize     uint16
-	childrenSize uint16
-	items        [maxPairs]pair
-	children     [maxChildren]int64
+	magic          [4]byte
+	itemsSize      uint16
+	childrenSize   uint16
+	offset         int64
+	items          [maxItems]pair
+	childrenOffset [maxChildren]int64
+
+	_children [maxChildren]*nodeBlock
+	_super    *SuperBlock
+}
+
+type pair struct {
+	key   uint128
+	value uint64
+}
+
+func (b *SuperBlock) newNode() *nodeBlock {
+	return &nodeBlock{
+		magic:  nodeMagic,
+		_super: b,
+	}
+}
+
+func (b *SuperBlock) addDirtyNode(n *nodeBlock) {
+	b._dirtyNodes[n] = true
 }
 
 func (b *SuperBlock) Sync() error {
@@ -80,7 +102,7 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 		}
 	}
 
-	sb := &SuperBlock{_fd: f}
+	sb := &SuperBlock{_fd: f, _dirtyNodes: map[*nodeBlock]bool{}}
 	h := fnv.New64()
 
 	if create {
@@ -113,4 +135,25 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 	}
 
 	return sb, nil
+}
+
+func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
+	_, err := sb._fd.Seek(offset, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	var nodeHdr [nodeBlockSize]byte
+	var n = &nodeBlock{_super: sb}
+
+	if _, err := io.ReadAtLeast(sb._fd, nodeHdr[:], nodeBlockSize); err != nil {
+		return nil, err
+	}
+
+	*(*[nodeBlockSize]byte)(unsafe.Pointer(n)) = nodeHdr
+	if n.magic != nodeMagic {
+		return nil, fmt.Errorf("wrong magic code")
+	}
+
+	return n, nil
 }

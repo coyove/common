@@ -48,16 +48,13 @@
 package fz
 
 import (
+	"os"
 	"sort"
+	"unsafe"
 )
 
-// NewWithFreeList creates a new B-Tree that uses the given node free list.
-func NewTree() *BTree {
-	return &BTree{}
-}
-
-const maxPairs = 63
-const maxChildren = maxPairs + 1
+const maxItems = 63
+const maxChildren = maxItems + 1
 
 type uint128 [2]uint64
 
@@ -68,254 +65,270 @@ func (l uint128) less(r uint128) bool {
 	return l[0] < r[0]
 }
 
-type pair struct {
-	key   uint64
-	value uint64
-}
-
-// items stores items in a node.
-type items struct {
-	size int
-	data [maxPairs]pair
+func (s *nodeBlock) markDirty() {
+	s._super.addDirtyNode(s)
 }
 
 // insertAt inserts a value into the given index, pushing all subsequent values
 // forward.
-func (s *items) insertAt(index int, item pair) {
-	if s.size >= maxPairs {
+func (s *nodeBlock) insertItemAt(index int, item pair) {
+	if s.itemsSize >= maxItems {
 		panic("already full")
 	}
 
-	copy(s.data[index+1:], s.data[index:])
-	s.data[index] = item
-	s.size++
+	copy(s.items[index+1:], s.items[index:])
+	s.items[index] = item
+	s.itemsSize++
+	s.markDirty()
 }
 
-// removeAt removes a value at a given index, pulling all subsequent values
-// back.
-func (s *items) removeAt(index int) pair {
-	item := s.data[index]
-	copy(s.data[index:], s.data[index+1:])
-	s.size--
-	return item
-}
-
-// pop removes and returns the last element in the list.
-func (s *items) pop() (out pair) {
-	index := s.size - 1
-	out = s.data[index]
-	s.size--
-	return
-}
-
-// truncate truncates this instance at index so that it contains only the
-// first index items. index must be less than or equal to length.
-func (s *items) truncate(index int) {
-	s.size = index
-}
-
-func (s *items) append(pairs ...pair) {
-	copy(s.data[s.size:], pairs)
-	s.size += len(pairs)
-	if s.size > maxPairs {
+func (s *nodeBlock) appendItems(pairs ...pair) {
+	copy(s.items[s.itemsSize:], pairs)
+	s.itemsSize += uint16(len(pairs))
+	if s.itemsSize > maxItems {
 		panic("wtf")
 	}
+	s.markDirty()
 }
 
 // find returns the index where the given item should be inserted into this
 // list.  'found' is true if the item already exists in the list at the given
 // index.
-func (s items) find(item uint64) (index int, found bool) {
-	i := sort.Search(s.size, func(i int) bool {
-		return item < s.data[i].key
+func (s *nodeBlock) find(key uint128) (index int, found bool) {
+	i := sort.Search(int(s.itemsSize), func(i int) bool {
+		return key.less(s.items[i].key)
 	})
-	if i > 0 && s.data[i-1].key >= item {
+	if i > 0 && !(s.items[i-1].key.less(key)) {
 		return i - 1, true
 	}
 	return i, false
 }
 
-// children stores child nodes in a node.
-type children struct {
-	size int
-	data [maxChildren]*node
-}
-
 // insertAt inserts a value into the given index, pushing all subsequent values
 // forward.
-func (s *children) insertAt(index int, n *node) {
-	if s.size >= maxChildren {
+func (s *nodeBlock) insertChildAt(index int, n *nodeBlock) {
+	if s.childrenSize >= maxChildren {
 		panic("already full")
 	}
 
-	copy(s.data[index+1:], s.data[index:])
-	s.data[index] = n
-	s.size++
+	copy(s._children[index+1:], s._children[index:])
+	copy(s.childrenOffset[index+1:], s.childrenOffset[index:])
+	s._children[index] = n
+	s.childrenSize++
+	s.markDirty()
 }
 
-// removeAt removes a value at a given index, pulling all subsequent values
-// back.
-func (s *children) removeAt(index int) *node {
-	item := s.data[index]
-	copy(s.data[index:], s.data[index+1:])
-	s.size--
-	return item
-}
+func (s *nodeBlock) appendChildren(nodes ...*nodeBlock) {
+	copy(s._children[s.childrenSize:], nodes)
+	for i := uint16(0); i < uint16(len(nodes)); i++ {
+		if nodes[i] != nil {
+			s.childrenOffset[s.childrenSize+i] = nodes[i].offset
+		}
+	}
 
-// pop removes and returns the last element in the list.
-func (s *children) pop() (out *node) {
-	index := s.size - 1
-	out = s.data[index]
-	s.size--
-	return
-}
-
-// truncate truncates this instance at index so that it contains only the
-// first index children. index must be less than or equal to length.
-func (s *children) truncate(index int) {
-	s.size = index
-}
-
-func (s *children) append(nodes ...*node) {
-	copy(s.data[s.size:], nodes)
-	s.size += len(nodes)
-	if s.size > maxChildren {
+	s.childrenSize += uint16(len(nodes))
+	if s.childrenSize > maxChildren {
 		panic("wtf")
 	}
+	s.markDirty()
 }
 
-// node is an internal node in a tree.
-//
-// It must at all times maintain the invariant that either
-//   * len(children) == 0, len(items) unconstrained
-//   * len(children) == len(items) + 1
-type node struct {
-	items    items
-	children children
+func (s *nodeBlock) appendChildrenAndOffsets(nodes []*nodeBlock, offsets []int64) {
+	copy(s._children[s.childrenSize:], nodes)
+	for i := uint16(0); i < uint16(len(nodes)); i++ {
+		s.childrenOffset[s.childrenSize+i] = offsets[i]
+	}
+
+	s.childrenSize += uint16(len(nodes))
+	if s.childrenSize > maxChildren {
+		panic("wtf")
+	}
+	s.markDirty()
 }
 
 // split splits the given node at the given index.  The current node shrinks,
 // and this function returns the item that existed at that index and a new node
 // containing all items/children after it.
-func (n *node) split(i int) (pair, node) {
-	item := n.items.data[i]
-	next := node{}
-	next.items.append(n.items.data[i+1:]...)
-	n.items.truncate(i)
-	if n.children.size > 0 {
-		next.children.append(n.children.data[i+1:]...)
-		n.children.truncate(i + 1)
+func (n *nodeBlock) split(i int) (pair, *nodeBlock) {
+	item := n.items[i]
+	next := n._super.newNode()
+	next.appendItems(n.items[i+1:]...)
+	n.itemsSize = uint16(i)
+	if n.childrenSize > 0 {
+		next.appendChildrenAndOffsets(n._children[i+1:], n.childrenOffset[i+1:])
+		n.childrenSize = uint16(i + 1)
 	}
+	next.markDirty()
+	n.markDirty()
 	return item, next
 }
 
 // maybeSplitChild checks if a child should be split, and if so splits it.
 // Returns whether or not a split occurred.
-func (n *node) maybeSplitChild(i, maxpairs int) bool {
-	if n.children.data[i] == nil || n.children.data[i].items.size < maxpairs {
+func (n *nodeBlock) maybeSplitChild(i int) bool {
+	if n.child(i) == nil || n.child(i).itemsSize < maxItems {
 		return false
 	}
-	first := n.children.data[i]
-	item, second := first.split(maxpairs / 2)
-	n.items.insertAt(i, item)
-	n.children.insertAt(i+1, &second)
+	first := n.child(i)
+	item, second := first.split(maxItems / 2)
+	n.insertItemAt(i, item)
+	n.insertChildAt(i+1, second)
+	n.markDirty()
 	return true
 }
 
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *node) insert(item uint64, value uint64, maxpairs int) (pair, bool) {
-	i, found := n.items.find(item)
+func (n *nodeBlock) insert(key uint128, value uint64) (pair, bool) {
+
+	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
 	if found {
-		out := n.items.data[i]
-		n.items.data[i] = pair{item, value}
+		out := n.items[i]
+		n.items[i] = pair{key, value}
 		return out, false
 	}
-	if n.children.size == 0 {
-		n.items.insertAt(i, pair{item, value})
+	if n.childrenSize == 0 {
+		n.insertItemAt(i, pair{key, value})
 		return pair{}, true
 	}
-	if n.maybeSplitChild(i, maxpairs) {
-		inTree := n.items.data[i]
+	if n.maybeSplitChild(i) {
+		inTree := n.items[i]
 		switch {
-		case item < inTree.key:
+		case key.less(inTree.key):
 			// no change, we want first split node
-		case inTree.key < item:
+		case inTree.key.less(key):
 			i++ // we want second split node
 		default:
-			out := n.items.data[i]
-			n.items.data[i] = pair{item, value}
+			out := n.items[i]
+			n.items[i] = pair{key, value}
 			return out, false
 		}
 	}
 
-	return n.children.data[i].insert(item, value, maxpairs)
+	//log.Println(n._children, n.childrenOffset, n.childrenSize)
+	return n.child(i).insert(key, value)
+}
+
+func (n *nodeBlock) child(i int) *nodeBlock {
+	if n._children[i] == nil {
+		if n.childrenOffset[i] == 0 {
+			return nil
+		}
+
+		//log.Println(n.childrenOffset[i])
+		n._children[i], _ = n._super.loadNodeBlock(n.childrenOffset[i])
+	}
+	return n._children[i]
+}
+
+func (n *nodeBlock) areChildrenSynced() bool {
+	for i := uint16(0); i < n.childrenSize; i++ {
+		if n.childrenOffset[i] == 0 {
+			if n._children[i] != nil && n._children[i].offset > 0 {
+				n.childrenOffset[i] = n._children[i].offset
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func (n *nodeBlock) sync() (err error) {
+	if n.offset == 0 {
+		n.offset, err = n._super._fd.Seek(0, os.SEEK_END)
+		if err != nil {
+			return
+		}
+	}
+
+	_, err = n._super._fd.Seek(n.offset, 0)
+	if err != nil {
+		return
+	}
+
+	x := *(*[nodeBlockSize]byte)(unsafe.Pointer(n))
+	_, err = n._super._fd.Write(x[:])
+	return
 }
 
 // get finds the given key in the subtree and returns it.
-func (n *node) get(key uint64) pair {
-	i, found := n.items.find(key)
+func (n *nodeBlock) get(key uint128) (uint64, bool) {
+	i, found := n.find(key)
 	if found {
-		return n.items.data[i]
-	} else if n.children.size > 0 {
-		return n.children.data[i].get(key)
+		return n.items[i].value, true
+	} else if n.childrenSize > 0 {
+		return n.child(i).get(key)
 	}
-	return pair{}
+	return 0, false
 }
 
-// BTree is an implementation of a B-Tree.
-//
-// BTree stores pair instances in an ordered structure, allowing easy insertion,
-// removal, and iteration.
-//
-// Write operations are not safe for concurrent mutation by multiple
-// goroutines, but Read operations are.
-type BTree struct {
-	length int
-	root   *node
+func (sb *SuperBlock) Put(k uint128, v uint64) (_v uint64, err error) {
+	if sb.rootNode == 0 {
+		sb._root = sb.newNode()
+		sb._root.itemsSize = 1
+		sb._root.items[0] = pair{k, v}
+		sb._root.markDirty()
+		sb.count++
+		return 0, sb.syncDirties()
+	}
+
+	sb._root, err = sb.loadNodeBlock(sb.rootNode)
+	if err != nil {
+		return 0, err
+	}
+
+	if sb._root.itemsSize >= maxItems {
+		item2, second := sb._root.split(maxItems / 2)
+		oldroot := sb._root
+		sb._root = sb.newNode()
+		sb._root.appendItems(item2)
+		sb._root.appendChildren(oldroot, second)
+		sb._root.markDirty()
+	}
+
+	out, newinserted := sb._root.insert(k, v)
+	if newinserted {
+		sb.count++
+	}
+
+	if err := sb.syncDirties(); err != nil {
+		return 0, err
+	}
+
+	return out.value, nil
 }
 
-// ReplaceOrInsert adds the given item to the tree.  If an item in the tree
-// already equals the given one, it is removed from the tree and returned.
-// Otherwise, nil is returned.
-//
-// nil cannot be added to the tree (will panic).
-func (t *BTree) ReplaceOrInsert(item pair) pair {
-	if t.root == nil {
-		t.root = &node{}
-		t.root.items.size = 1
-		t.root.items.data[0] = item
-		t.length++
-		return pair{}
+func (sb *SuperBlock) Get(key uint128) (uint64, bool) {
+	if sb.rootNode == 0 {
+		return 0, false
 	}
-
-	if t.root.items.size >= maxPairs {
-		item2, second := t.root.split(maxPairs / 2)
-		oldroot := t.root
-		t.root = &node{}
-		t.root.items.append(item2)
-		t.root.children.append(oldroot, &second)
-	}
-
-	out, zero := t.root.insert(item.key, item.value, maxPairs)
-	if zero {
-		t.length++
-	}
-	return out
+	sb._root, _ = sb.loadNodeBlock(sb.rootNode)
+	return sb._root.get(key)
 }
 
-// Get looks for the key item in the tree, returning it.  It returns nil if
-// unable to find that item.
-func (t *BTree) Get(key uint64) pair {
-	if t.root == nil {
-		return pair{}
-	}
-	return t.root.get(key)
-}
+func (sb *SuperBlock) syncDirties() error {
+	rootIsDirty := sb._dirtyNodes[sb._root]
 
-// Len returns the number of items currently in the tree.
-func (t *BTree) Len() int {
-	return t.length
+	for len(sb._dirtyNodes) > 0 {
+		for node := range sb._dirtyNodes {
+			if !node.areChildrenSynced() {
+				continue
+			}
+
+			if err := node.sync(); err != nil {
+				return err
+			}
+			delete(sb._dirtyNodes, node)
+		}
+	}
+
+	if rootIsDirty {
+		sb.rootNode = sb._root.offset
+	}
+
+	//log.Println("======")
+	return sb.Sync()
 }
