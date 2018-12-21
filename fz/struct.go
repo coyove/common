@@ -1,6 +1,7 @@
 package fz
 
 import (
+	"bytes"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -16,6 +17,8 @@ var (
 	nodeMagic              = [4]byte{'x', 'x', 'x', '0'}
 	_one            uint16 = 1
 	_endian         byte   = *(*byte)(unsafe.Pointer(&_one))
+
+	ErrWrongMagic = fmt.Errorf("wrong magic code")
 )
 
 const superBlockSize = 64
@@ -35,6 +38,9 @@ type SuperBlock struct {
 	_fd         *os.File
 	_dirtyNodes map[*nodeBlock]bool
 	_root       *nodeBlock
+
+	_snapshot       [superBlockSize]byte
+	_masterSnapshot bytes.Buffer
 }
 
 type nodeBlock struct {
@@ -47,6 +53,7 @@ type nodeBlock struct {
 
 	_children [maxChildren]*nodeBlock
 	_super    *SuperBlock
+	_snapshot [nodeBlockSize]byte
 }
 
 type pair struct {
@@ -71,6 +78,7 @@ func (b *SuperBlock) Sync() error {
 	h.Write(blockHdr[:superBlockSize-8])
 	b.superHash = h.Sum64()
 	blockHdr = *(*[superBlockSize]byte)(unsafe.Pointer(b))
+	b._snapshot = blockHdr
 
 	b._fd.Seek(0, 0)
 	if _, err := b._fd.Write(blockHdr[:]); err != nil {
@@ -117,7 +125,7 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 	} else {
 		copy((*(*[superBlockSize]byte)(unsafe.Pointer(sb)))[:], blockHdr[:])
 		if sb.magic != superBlockMagic {
-			return nil, fmt.Errorf("wrong magic code")
+			return nil, ErrWrongMagic
 		}
 		if sb.endian != _endian {
 			return nil, fmt.Errorf("wrong endianness")
@@ -132,28 +140,69 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 		if sb.rootNode >= fi.Size() {
 			return nil, fmt.Errorf("corrupted root node")
 		}
+
+		sb._snapshot = blockHdr
 	}
 
 	return sb, nil
 }
 
+func (sb *SuperBlock) loadNodeBlockBytes(offset int64) (nodeHdr [nodeBlockSize]byte, err error) {
+	_, err = sb._fd.Seek(offset, 0)
+	if err != nil {
+		return
+	}
+
+	if _, err = io.ReadAtLeast(sb._fd, nodeHdr[:], nodeBlockSize); err != nil {
+		return
+	}
+
+	return
+}
+
 func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
-	_, err := sb._fd.Seek(offset, 0)
+	var n = &nodeBlock{_super: sb}
+	x, err := sb.loadNodeBlockBytes(offset)
 	if err != nil {
 		return nil, err
 	}
 
-	var nodeHdr [nodeBlockSize]byte
-	var n = &nodeBlock{_super: sb}
-
-	if _, err := io.ReadAtLeast(sb._fd, nodeHdr[:], nodeBlockSize); err != nil {
-		return nil, err
-	}
-
-	*(*[nodeBlockSize]byte)(unsafe.Pointer(n)) = nodeHdr
+	*(*[nodeBlockSize]byte)(unsafe.Pointer(n)) = x
 	if n.magic != nodeMagic {
-		return nil, fmt.Errorf("wrong magic code")
+		return nil, ErrWrongMagic
 	}
 
+	n._snapshot = x
 	return n, nil
+}
+
+func (sb *SuperBlock) fastchild(offset int64, i int) (int64, error) {
+	_, err := sb._fd.Seek(offset, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	var magic [4]byte
+	if _, err := io.ReadAtLeast(sb._fd, magic[:], 4); err != nil {
+		return 0, err
+	}
+
+	if magic != nodeMagic {
+		return 0, ErrWrongMagic
+	}
+
+	addr := offset + int64(16+maxItems*24+i*8)
+	_, err = sb._fd.Seek(addr, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	var child [4]byte
+	if _, err := io.ReadAtLeast(sb._fd, child[:], 8); err != nil {
+		return 0, err
+	}
+
+	var ret int64
+	ret = *(*int64)(unsafe.Pointer(&child))
+	return ret, nil
 }

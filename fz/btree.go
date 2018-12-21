@@ -265,7 +265,7 @@ func (n *nodeBlock) get(key uint128) (uint64, bool) {
 	return 0, false
 }
 
-func (sb *SuperBlock) Put(k uint128, v uint64) (_v uint64, err error) {
+func (sb *SuperBlock) Put(k uint128, v uint64) (uint64, error) {
 	if sb.rootNode == 0 {
 		sb._root = sb.newNode()
 		sb._root.itemsSize = 1
@@ -275,6 +275,7 @@ func (sb *SuperBlock) Put(k uint128, v uint64) (_v uint64, err error) {
 		return 0, sb.syncDirties()
 	}
 
+	var err error
 	sb._root, err = sb.loadNodeBlock(sb.rootNode)
 	if err != nil {
 		return 0, err
@@ -310,7 +311,15 @@ func (sb *SuperBlock) Get(key uint128) (uint64, bool) {
 }
 
 func (sb *SuperBlock) syncDirties() error {
-	rootIsDirty := sb._dirtyNodes[sb._root]
+	sb._masterSnapshot.Reset()
+	sb._masterSnapshot.Write(sb._snapshot[:])
+
+	for node := range sb._dirtyNodes {
+		if node.offset == 0 {
+			continue
+		}
+		sb._masterSnapshot.Write(node._snapshot[:])
+	}
 
 	for len(sb._dirtyNodes) > 0 {
 		for node := range sb._dirtyNodes {
@@ -325,10 +334,6 @@ func (sb *SuperBlock) syncDirties() error {
 		}
 	}
 
-	if rootIsDirty {
-		sb.rootNode = sb._root.offset
-	}
-
-	//log.Println("======")
+	sb.rootNode = sb._root.offset
 	return sb.Sync()
 }
