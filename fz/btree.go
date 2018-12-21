@@ -59,8 +59,18 @@ func NewTree() *BTree {
 const maxPairs = 63
 const maxChildren = maxPairs + 1
 
+type uint128 [2]uint64
+
+func (l uint128) less(r uint128) bool {
+	if l[0] == r[0] {
+		return l[1] < r[1]
+	}
+	return l[0] < r[0]
+}
+
 type pair struct {
-	key, value uint64
+	key   uint64
+	value uint64
 }
 
 // items stores items in a node.
@@ -201,12 +211,12 @@ func (n *node) split(i int) (pair, node) {
 
 // maybeSplitChild checks if a child should be split, and if so splits it.
 // Returns whether or not a split occurred.
-func (n *node) maybeSplitChild(i int) bool {
-	if n.children.data[i] == nil || n.children.data[i].items.size < maxPairs {
+func (n *node) maybeSplitChild(i, maxpairs int) bool {
+	if n.children.data[i] == nil || n.children.data[i].items.size < maxpairs {
 		return false
 	}
 	first := n.children.data[i]
-	item, second := first.split(maxPairs / 2)
+	item, second := first.split(maxpairs / 2)
 	n.items.insertAt(i, item)
 	n.children.insertAt(i+1, &second)
 	return true
@@ -215,7 +225,7 @@ func (n *node) maybeSplitChild(i int) bool {
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *node) insert(item uint64, value uint64) (pair, bool) {
+func (n *node) insert(item uint64, value uint64, maxpairs int) (pair, bool) {
 	i, found := n.items.find(item)
 	//log.Println(n.children, n.items, item, i, found)
 	if found {
@@ -227,7 +237,7 @@ func (n *node) insert(item uint64, value uint64) (pair, bool) {
 		n.items.insertAt(i, pair{item, value})
 		return pair{}, true
 	}
-	if n.maybeSplitChild(i) {
+	if n.maybeSplitChild(i, maxpairs) {
 		inTree := n.items.data[i]
 		switch {
 		case item < inTree.key:
@@ -241,7 +251,7 @@ func (n *node) insert(item uint64, value uint64) (pair, bool) {
 		}
 	}
 
-	return n.children.data[i].insert(item, value)
+	return n.children.data[i].insert(item, value, maxpairs)
 }
 
 // get finds the given key in the subtree and returns it.
@@ -272,7 +282,7 @@ type BTree struct {
 // Otherwise, nil is returned.
 //
 // nil cannot be added to the tree (will panic).
-func (t *BTree) Put(item pair) pair {
+func (t *BTree) ReplaceOrInsert(item pair) pair {
 	if t.root == nil {
 		t.root = &node{}
 		t.root.items.size = 1
@@ -289,7 +299,7 @@ func (t *BTree) Put(item pair) pair {
 		t.root.children.append(oldroot, &second)
 	}
 
-	out, zero := t.root.insert(item.key, item.value)
+	out, zero := t.root.insert(item.key, item.value, maxPairs)
 	if zero {
 		t.length++
 	}
