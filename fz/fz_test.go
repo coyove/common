@@ -11,7 +11,7 @@ import (
 	"github.com/coyove/common/rand"
 )
 
-const COUNT = 1 << 10
+const COUNT = 1 << 4
 
 func TestOpenFZ(t *testing.T) {
 	os.Remove("test")
@@ -50,8 +50,9 @@ func BenchmarkFZ(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	r := rand.New()
 	for i := 0; i < b.N; i++ {
-		f.Get(uint128{0, 13739})
+		f.Get(uint128{0, r.Uint64()})
 	}
 
 	f.Close()
@@ -69,8 +70,9 @@ func TestA_Begin(t *testing.T) {
 
 func BenchmarkFile(b *testing.B) {
 
+	r := rand.New()
 	for i := 0; i < b.N; i++ {
-		f, _ := os.Open("test2/100")
+		f, _ := os.Open("test2/" + strconv.Itoa(r.Intn(COUNT)))
 		buf := make([]byte, 200)
 		f.Seek(0, 0)
 		io.ReadAtLeast(f, buf, 200)

@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -24,6 +25,7 @@ var (
 
 const superBlockSize = 64
 const nodeBlockSize = 16 + maxItems*24 + maxChildren*8
+const nodeBlockSizeFast = 16
 const fileBlockSize = 24
 
 type SuperBlock struct {
@@ -185,33 +187,64 @@ func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
 	return n, nil
 }
 
-func (sb *SuperBlock) fastchild(offset int64, i int) (int64, error) {
-	_, err := sb._fd.Seek(offset, 0)
+func (b *nodeBlock) fastchild(i int) (*nodeBlock, error) {
+	sb := b._super
+
+	_, err := sb._fd.Seek(b.offset+16+24*maxItems+int64(i)*8, 0)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	var magic [4]byte
-	if _, err := io.ReadAtLeast(sb._fd, magic[:], 4); err != nil {
-		return 0, err
+	var addr [8]byte
+	if _, err := io.ReadAtLeast(sb._fd, addr[:], len(addr)); err != nil {
+		return nil, err
 	}
 
-	if magic != nodeMagic {
-		return 0, ErrWrongMagic
-	}
+	offset := *(*int64)(unsafe.Pointer(&addr))
 
-	addr := offset + int64(16+maxItems*24+i*8)
-	_, err = sb._fd.Seek(addr, 0)
+	_, err = sb._fd.Seek(offset, 0)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	var child [4]byte
-	if _, err := io.ReadAtLeast(sb._fd, child[:], 8); err != nil {
-		return 0, err
+	var nodeHdr [nodeBlockSizeFast]byte
+	var node = &nodeBlock{}
+	if _, err := io.ReadAtLeast(sb._fd, nodeHdr[:], len(nodeHdr)); err != nil {
+		return nil, err
+	}
+	*(*[nodeBlockSizeFast]byte)(unsafe.Pointer(node)) = nodeHdr
+
+	if node.magic != nodeMagic {
+		return nil, ErrWrongMagic
 	}
 
-	var ret int64
-	ret = *(*int64)(unsafe.Pointer(&child))
-	return ret, nil
+	return node, nil
+}
+
+func (b *nodeBlock) fastitem(i int) (*pair, error) {
+	sb := b._super
+
+	_, err := sb._fd.Seek(b.offset+16+int64(i)*24, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	var addr [24]byte
+	if _, err := io.ReadAtLeast(sb._fd, addr[:], len(addr)); err != nil {
+		return nil, err
+	}
+
+	return (*pair)(unsafe.Pointer(&addr)), nil
+}
+
+func (s *nodeBlock) fastfind(key uint128) (index int, p *pair, found bool) {
+	i := sort.Search(int(s.itemsSize), func(i int) bool {
+		it, _ := s.fastitem(i)
+		return key.less(it.key)
+	})
+	it, _ := s.fastitem(i - 1)
+	if i > 0 && !(it.key.less(key)) {
+		return i - 1, it, true
+	}
+	return i, nil, false
 }
