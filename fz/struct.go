@@ -14,6 +14,7 @@ import (
 
 var (
 	superBlockMagic        = [4]byte{'z', 'z', 'z', '0'}
+	fileMagic              = [4]byte{'y', 'y', 'y', '0'}
 	nodeMagic              = [4]byte{'x', 'x', 'x', '0'}
 	_one            uint16 = 1
 	_endian         byte   = *(*byte)(unsafe.Pointer(&_one))
@@ -23,6 +24,7 @@ var (
 
 const superBlockSize = 64
 const nodeBlockSize = 16 + maxItems*24 + maxChildren*8
+const fileBlockSize = 24
 
 type SuperBlock struct {
 	magic     [4]byte
@@ -56,9 +58,16 @@ type nodeBlock struct {
 	_snapshot [nodeBlockSize]byte
 }
 
+type fileBlock struct {
+	magic  [4]byte
+	flag   uint32
+	offset int64
+	size   int64
+}
+
 type pair struct {
 	key   uint128
-	value uint64
+	value int64
 }
 
 func (b *SuperBlock) newNode() *nodeBlock {

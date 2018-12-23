@@ -180,7 +180,7 @@ func (n *nodeBlock) maybeSplitChild(i int) bool {
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *nodeBlock) insert(key uint128, value uint64) (pair, bool) {
+func (n *nodeBlock) insert(key uint128, value int64) (pair, bool) {
 
 	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
@@ -255,7 +255,7 @@ func (n *nodeBlock) sync() (err error) {
 }
 
 // get finds the given key in the subtree and returns it.
-func (n *nodeBlock) get(key uint128) (uint64, bool) {
+func (n *nodeBlock) get(key uint128) (int64, bool) {
 	i, found := n.find(key)
 	if found {
 		return n.items[i].value, true
@@ -265,20 +265,28 @@ func (n *nodeBlock) get(key uint128) (uint64, bool) {
 	return 0, false
 }
 
-func (sb *SuperBlock) Put(k uint128, v uint64) (uint64, error) {
+func (sb *SuperBlock) Put(k uint128, payload []byte) error {
+	v, err := sb._fd.Seek(0, os.SEEK_END)
+	if err != nil {
+		return err
+	}
+
+	if _, err := sb._fd.Write(payload); err != nil {
+		return err
+	}
+
 	if sb.rootNode == 0 {
 		sb._root = sb.newNode()
 		sb._root.itemsSize = 1
 		sb._root.items[0] = pair{k, v}
 		sb._root.markDirty()
 		sb.count++
-		return 0, sb.syncDirties()
+		return sb.syncDirties()
 	}
 
-	var err error
 	sb._root, err = sb.loadNodeBlock(sb.rootNode)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	if sb._root.itemsSize >= maxItems {
@@ -290,19 +298,19 @@ func (sb *SuperBlock) Put(k uint128, v uint64) (uint64, error) {
 		sb._root.markDirty()
 	}
 
-	out, newinserted := sb._root.insert(k, v)
+	_, newinserted := sb._root.insert(k, v)
 	if newinserted {
 		sb.count++
 	}
 
 	if err := sb.syncDirties(); err != nil {
-		return 0, err
+		return err
 	}
 
-	return out.value, nil
+	return nil
 }
 
-func (sb *SuperBlock) Get(key uint128) (uint64, bool) {
+func (sb *SuperBlock) Get(key uint128) (int64, bool) {
 	if sb.rootNode == 0 {
 		return 0, false
 	}
