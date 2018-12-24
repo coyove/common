@@ -166,10 +166,11 @@ func (n *nodeBlock) split(i int) (pair, *nodeBlock) {
 // maybeSplitChild checks if a child should be split, and if so splits it.
 // Returns whether or not a split occurred.
 func (n *nodeBlock) maybeSplitChild(i int) bool {
-	if n.child(i) == nil || n.child(i).itemsSize < maxItems {
+	ci, _ := n.child(i)
+	if ci == nil || ci.itemsSize < maxItems {
 		return false
 	}
-	first := n.child(i)
+	first := ci
 	item, second := first.split(maxItems / 2)
 	n.insertItemAt(i, item)
 	n.insertChildAt(i+1, second)
@@ -180,19 +181,21 @@ func (n *nodeBlock) maybeSplitChild(i int) bool {
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *nodeBlock) insert(key uint128, value int64) (pair, bool) {
+func (n *nodeBlock) insert(key uint128, value int64) (pair, error) {
 
 	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
 	if found {
 		out := n.items[i]
 		n.items[i] = pair{key, value}
-		return out, false
+		return out, ErrKeyUpdated
 	}
+
 	if n.childrenSize == 0 {
 		n.insertItemAt(i, pair{key, value})
-		return pair{}, true
+		return pair{}, ErrKeyInserted
 	}
+
 	if n.maybeSplitChild(i) {
 		inTree := n.items[i]
 		switch {
@@ -203,24 +206,29 @@ func (n *nodeBlock) insert(key uint128, value int64) (pair, bool) {
 		default:
 			out := n.items[i]
 			n.items[i] = pair{key, value}
-			return out, false
+			return out, ErrKeyUpdated
 		}
 	}
 
 	//log.Println(n._children, n.childrenOffset, n.childrenSize)
-	return n.child(i).insert(key, value)
+	ch, err := n.child(i)
+	if err != nil {
+		return pair{}, err
+	}
+	return ch.insert(key, value)
 }
 
-func (n *nodeBlock) child(i int) *nodeBlock {
+func (n *nodeBlock) child(i int) (*nodeBlock, error) {
+	var err error
 	if n._children[i] == nil {
 		if n.childrenOffset[i] == 0 {
-			return nil
+			return nil, nil
 		}
 
 		//log.Println(n.childrenOffset[i])
-		n._children[i], _ = n._super.loadNodeBlock(n.childrenOffset[i])
+		n._children[i], err = n._super.loadNodeBlock(n.childrenOffset[i])
 	}
-	return n._children[i]
+	return n._children[i], err
 }
 
 func (n *nodeBlock) areChildrenSynced() bool {
@@ -255,25 +263,30 @@ func (n *nodeBlock) sync() (err error) {
 }
 
 // get finds the given key in the subtree and returns it.
-func (n *nodeBlock) get(key uint128) (int64, bool) {
+func (n *nodeBlock) get(key uint128) (int64, error) {
 	i, found := n.find(key)
 	if found {
-		return n.items[i].value, true
+		return n.items[i].value, nil
 	} else if n.childrenSize > 0 {
-		return n.child(i).get(key)
+		ch, err := n.child(i)
+		if err != nil {
+			return 0, err
+		}
+		return ch.get(key)
 	}
-	return 0, false
+	return 0, ErrKeyNotFound
 }
 
-func (sb *SuperBlock) Put(k uint128, payload []byte) error {
-	v, err := sb._fd.Seek(0, os.SEEK_END)
-	if err != nil {
-		return err
-	}
-
-	if _, err := sb._fd.Write(payload); err != nil {
-		return err
-	}
+func (sb *SuperBlock) Put(k uint128, v int64) error {
+	var err error
+	//	v, err := sb._fd.Seek(0, os.SEEK_END)
+	//	if err != nil {
+	//		return err
+	//	}
+	//
+	//	if _, err := sb._fd.Write(payload); err != nil {
+	//		return err
+	//	}
 
 	if sb.rootNode == 0 {
 		sb._root = sb.newNode()
@@ -298,9 +311,12 @@ func (sb *SuperBlock) Put(k uint128, payload []byte) error {
 		sb._root.markDirty()
 	}
 
-	_, newinserted := sb._root.insert(k, v)
-	if newinserted {
+	switch _, err := sb._root.insert(k, v); err {
+	case ErrKeyInserted:
 		sb.count++
+	case ErrKeyUpdated:
+	default:
+		return err
 	}
 
 	if err := sb.syncDirties(); err != nil {
@@ -310,11 +326,22 @@ func (sb *SuperBlock) Put(k uint128, payload []byte) error {
 	return nil
 }
 
-func (sb *SuperBlock) Get(key uint128) (int64, bool) {
+func (sb *SuperBlock) Get(key uint128) (int64, error) {
+	sb._lock.RLock()
+	defer sb._lock.RUnlock()
+
+	var err error
 	if sb.rootNode == 0 {
-		return 0, false
+		return 0, ErrKeyNotFound
 	}
-	sb._root, _ = sb.loadNodeBlock(sb.rootNode)
+
+	if sb._root == nil {
+		sb._root, err = sb.loadNodeBlock(sb.rootNode)
+		if err != nil {
+			return 0, err
+		}
+	}
+
 	return sb._root.get(key)
 }
 

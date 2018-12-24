@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -20,7 +21,10 @@ var (
 	_one            uint16 = 1
 	_endian         byte   = *(*byte)(unsafe.Pointer(&_one))
 
-	ErrWrongMagic = fmt.Errorf("wrong magic code")
+	ErrWrongMagic  = fmt.Errorf("wrong magic code")
+	ErrKeyNotFound = fmt.Errorf("key not found")
+	ErrKeyInserted = fmt.Errorf("key inserted")
+	ErrKeyUpdated  = fmt.Errorf("key updated")
 )
 
 const superBlockSize = 64
@@ -42,6 +46,7 @@ type SuperBlock struct {
 	_fd         *os.File
 	_dirtyNodes map[*nodeBlock]bool
 	_root       *nodeBlock
+	_lock       sync.RWMutex
 
 	_snapshot       [superBlockSize]byte
 	_masterSnapshot bytes.Buffer
