@@ -48,8 +48,10 @@
 package fz
 
 import (
+	"io"
 	"os"
 	"sort"
+	"time"
 	"unsafe"
 )
 
@@ -181,19 +183,17 @@ func (n *nodeBlock) maybeSplitChild(i int) bool {
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *nodeBlock) insert(key uint128, value int64) (pair, error) {
-
+func (n *nodeBlock) insert(key uint128, value int64) error {
+	p := pair{key: key, value: value}
 	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
 	if found {
-		out := n.items[i]
-		n.items[i] = pair{key, value}
-		return out, ErrKeyUpdated
+		return ErrKeyExisted
 	}
 
 	if n.childrenSize == 0 {
-		n.insertItemAt(i, pair{key, value})
-		return pair{}, ErrKeyInserted
+		n.insertItemAt(i, p)
+		return ErrKeyInserted
 	}
 
 	if n.maybeSplitChild(i) {
@@ -204,16 +204,14 @@ func (n *nodeBlock) insert(key uint128, value int64) (pair, error) {
 		case inTree.key.less(key):
 			i++ // we want second split node
 		default:
-			out := n.items[i]
-			n.items[i] = pair{key, value}
-			return out, ErrKeyUpdated
+			return ErrKeyExisted
 		}
 	}
 
 	//log.Println(n._children, n.childrenOffset, n.childrenSize)
 	ch, err := n.child(i)
 	if err != nil {
-		return pair{}, err
+		return err
 	}
 	return ch.insert(key, value)
 }
@@ -277,29 +275,45 @@ func (n *nodeBlock) get(key uint128) (int64, error) {
 	return 0, ErrKeyNotFound
 }
 
-func (sb *SuperBlock) Put(k uint128, v int64) error {
-	var err error
-	//	v, err := sb._fd.Seek(0, os.SEEK_END)
-	//	if err != nil {
-	//		return err
-	//	}
-	//
-	//	if _, err := sb._fd.Write(payload); err != nil {
-	//		return err
-	//	}
+func (sb *SuperBlock) writePair(key uint128) (pair, error) {
+	if sb._reader == nil {
+		panic("wtf")
+	}
 
-	if sb.rootNode == 0 {
+	v, err := sb._fd.Seek(0, os.SEEK_END)
+	if err != nil {
+		return pair{}, err
+	}
+
+	n, err := io.Copy(sb._fd, sb._reader)
+	if err != nil {
+		return pair{}, err
+	}
+
+	p := pair{key: key, tstamp: uint32(time.Now().Unix()), value: v, size: n}
+	return p, nil
+}
+
+func (sb *SuperBlock) Put(k uint128, v int64) error {
+	sb._lock.Lock()
+	defer sb._lock.Unlock()
+
+	var err error
+
+	if sb.rootNode == 0 && sb._root == nil {
 		sb._root = sb.newNode()
 		sb._root.itemsSize = 1
-		sb._root.items[0] = pair{k, v}
+		sb._root.items[0] = pair{key: k, value: v}
 		sb._root.markDirty()
 		sb.count++
 		return sb.syncDirties()
 	}
 
-	sb._root, err = sb.loadNodeBlock(sb.rootNode)
-	if err != nil {
-		return err
+	if sb._root == nil {
+		sb._root, err = sb.loadNodeBlock(sb.rootNode)
+		if err != nil {
+			return err
+		}
 	}
 
 	if sb._root.itemsSize >= maxItems {
@@ -311,10 +325,9 @@ func (sb *SuperBlock) Put(k uint128, v int64) error {
 		sb._root.markDirty()
 	}
 
-	switch _, err := sb._root.insert(k, v); err {
+	switch err := sb._root.insert(k, v); err {
 	case ErrKeyInserted:
 		sb.count++
-	case ErrKeyUpdated:
 	default:
 		return err
 	}
@@ -345,7 +358,26 @@ func (sb *SuperBlock) Get(key uint128) (int64, error) {
 	return sb._root.get(key)
 }
 
+func (sb *SuperBlock) Commit() error {
+	if sb._flag&LsAsyncCommit == 0 {
+		panic("SuperBlock is not in async state")
+	}
+
+	sb._lock.Lock()
+	defer sb._lock.Unlock()
+
+	return sb._syncDirties()
+}
+
 func (sb *SuperBlock) syncDirties() error {
+	if sb._flag&LsAsyncCommit > 0 {
+		return nil
+	}
+
+	return sb._syncDirties()
+}
+
+func (sb *SuperBlock) _syncDirties() error {
 	sb._masterSnapshot.Reset()
 	sb._masterSnapshot.Write(sb._snapshot[:])
 

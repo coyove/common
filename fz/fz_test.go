@@ -43,6 +43,51 @@ func TestOpenFZ(t *testing.T) {
 	f.Close()
 }
 
+func TestOpenFZ2(t *testing.T) {
+	f, err := OpenFZ("map", true)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < COUNT; i++ {
+		f.Put(uint128{0, uint64(i)}, int64(i))
+		if f.Count() != i+1 {
+			t.Error("Count() failed")
+		}
+		for j := 0; j < i; j++ {
+			if v, _ := f.Get(uint128{0, uint64(j)}); v != int64(j) {
+				t.Error(v, j)
+			}
+		}
+	}
+
+	f.Close()
+	os.Remove("map")
+}
+
+func TestOpenFZ2Async(t *testing.T) {
+	f, err := OpenFZ("map", true)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.SetFlag(LsAsyncCommit)
+
+	for i := 0; i < COUNT; i++ {
+		f.Put(uint128{0, uint64(i)}, int64(i))
+	}
+
+	f.Commit()
+	for j := 0; j < COUNT; j++ {
+		if v, err := f.Get(uint128{0, uint64(j)}); v != int64(j) {
+			t.Error(v, j, err)
+		}
+	}
+
+	f.Close()
+	os.Remove("map")
+}
+
 func BenchmarkFZ(b *testing.B) {
 	f, err := OpenFZ("test", false)
 	if f == nil {

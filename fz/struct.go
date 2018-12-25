@@ -16,7 +16,6 @@ import (
 
 var (
 	superBlockMagic        = [4]byte{'z', 'z', 'z', '0'}
-	fileMagic              = [4]byte{'y', 'y', 'y', '0'}
 	nodeMagic              = [4]byte{'x', 'x', 'x', '0'}
 	_one            uint16 = 1
 	_endian         byte   = *(*byte)(unsafe.Pointer(&_one))
@@ -24,13 +23,17 @@ var (
 	ErrWrongMagic  = fmt.Errorf("wrong magic code")
 	ErrKeyNotFound = fmt.Errorf("key not found")
 	ErrKeyInserted = fmt.Errorf("key inserted")
-	ErrKeyUpdated  = fmt.Errorf("key updated")
+	ErrKeyExisted  = fmt.Errorf("key already existed")
 )
 
+const itemSize = 56
 const superBlockSize = 64
-const nodeBlockSize = 16 + maxItems*24 + maxChildren*8
+const nodeBlockSize = 16 + maxItems*itemSize + maxChildren*8
 const nodeBlockSizeFast = 16
-const fileBlockSize = 24
+
+const (
+	LsAsyncCommit = 1 << iota
+)
 
 type SuperBlock struct {
 	magic     [4]byte
@@ -47,6 +50,8 @@ type SuperBlock struct {
 	_dirtyNodes map[*nodeBlock]bool
 	_root       *nodeBlock
 	_lock       sync.RWMutex
+	_reader     io.Reader
+	_flag       uint32
 
 	_snapshot       [superBlockSize]byte
 	_masterSnapshot bytes.Buffer
@@ -65,16 +70,14 @@ type nodeBlock struct {
 	_snapshot [nodeBlockSize]byte
 }
 
-type fileBlock struct {
-	magic  [4]byte
-	flag   uint32
-	offset int64
-	size   int64
-}
-
 type pair struct {
-	key   uint128
-	value int64
+	key    uint128
+	value  int64
+	size   int64
+	tstamp uint32
+	flag   uint32
+	flag2  uint64
+	hash   uint64
 }
 
 func (b *SuperBlock) newNode() *nodeBlock {
@@ -86,6 +89,10 @@ func (b *SuperBlock) newNode() *nodeBlock {
 
 func (b *SuperBlock) addDirtyNode(n *nodeBlock) {
 	b._dirtyNodes[n] = true
+}
+
+func (b *SuperBlock) SetFlag(flag uint32) {
+	b._flag |= flag
 }
 
 func (b *SuperBlock) Sync() error {
@@ -101,6 +108,10 @@ func (b *SuperBlock) Sync() error {
 		return err
 	}
 	return b._fd.Sync()
+}
+
+func (b *SuperBlock) Count() int {
+	return int(b.count)
 }
 
 func (b *SuperBlock) Close() {
@@ -195,7 +206,7 @@ func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
 func (b *nodeBlock) fastchild(i int) (*nodeBlock, error) {
 	sb := b._super
 
-	_, err := sb._fd.Seek(b.offset+16+24*maxItems+int64(i)*8, 0)
+	_, err := sb._fd.Seek(b.offset+16+itemSize*maxItems+int64(i)*8, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -229,12 +240,12 @@ func (b *nodeBlock) fastchild(i int) (*nodeBlock, error) {
 func (b *nodeBlock) fastitem(i int) (*pair, error) {
 	sb := b._super
 
-	_, err := sb._fd.Seek(b.offset+16+int64(i)*24, 0)
+	_, err := sb._fd.Seek(b.offset+16+int64(i)*itemSize, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	var addr [24]byte
+	var addr [itemSize]byte
 	if _, err := io.ReadAtLeast(sb._fd, addr[:], len(addr)); err != nil {
 		return nil, err
 	}
