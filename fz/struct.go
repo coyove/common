@@ -3,8 +3,10 @@ package fz
 import (
 	"bytes"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"io"
+	"io/ioutil"
 	"os"
 	"sort"
 	"sync"
@@ -12,6 +14,11 @@ import (
 	"unsafe"
 
 	"github.com/coyove/common/rand"
+)
+
+var (
+	testCase1 bool
+	testError = fmt.Errorf("test")
 )
 
 var (
@@ -47,14 +54,16 @@ type SuperBlock struct {
 	superHash uint64
 
 	_fd         *os.File
+	_filename   string
 	_dirtyNodes map[*nodeBlock]bool
 	_root       *nodeBlock
 	_lock       sync.RWMutex
 	_reader     io.Reader
 	_flag       uint32
 
-	_snapshot       [superBlockSize]byte
-	_masterSnapshot bytes.Buffer
+	_snapshot        [superBlockSize]byte
+	_snapshotPending [superBlockSize]byte
+	_masterSnapshot  bytes.Buffer
 }
 
 type nodeBlock struct {
@@ -65,9 +74,10 @@ type nodeBlock struct {
 	items          [maxItems]pair
 	childrenOffset [maxChildren]int64
 
-	_children [maxChildren]*nodeBlock
-	_super    *SuperBlock
-	_snapshot [nodeBlockSize]byte
+	_children        [maxChildren]*nodeBlock
+	_super           *SuperBlock
+	_snapshot        [nodeBlockSize]byte
+	_snapshotPending [nodeBlockSize]byte
 }
 
 type pair struct {
@@ -78,6 +88,12 @@ type pair struct {
 	flag   uint32
 	flag2  uint64
 	hash   uint64
+}
+
+type Data struct {
+	pair
+	_fd *os.File
+	h   hash.Hash64
 }
 
 func (b *SuperBlock) newNode() *nodeBlock {
@@ -137,7 +153,11 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 		}
 	}
 
-	sb := &SuperBlock{_fd: f, _dirtyNodes: map[*nodeBlock]bool{}}
+	sb := &SuperBlock{
+		_fd:         f,
+		_dirtyNodes: map[*nodeBlock]bool{},
+		_filename:   path,
+	}
 	h := fnv.New64()
 
 	if create {
@@ -203,6 +223,10 @@ func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
 	return n, nil
 }
 
+func (sb *SuperBlock) DumpSnapshot() []byte {
+	return sb._masterSnapshot.Bytes()
+}
+
 func (b *nodeBlock) fastchild(i int) (*nodeBlock, error) {
 	sb := b._super
 
@@ -263,4 +287,38 @@ func (s *nodeBlock) fastfind(key uint128) (index int, p *pair, found bool) {
 		return i - 1, it, true
 	}
 	return i, nil, false
+}
+
+func (d *Data) Read(p []byte) (int, error) {
+	if d.size <= 0 {
+		return 0, io.EOF
+	}
+
+	n, err := d._fd.Read(p)
+
+	if int64(n) > d.size {
+		n = int(d.size)
+		d.size = 0
+	} else {
+		d.size -= int64(n)
+	}
+
+	d.h.Write(p[:n])
+	if d.size == 0 {
+		if d.hash != d.h.Sum64() {
+			return 0, fmt.Errorf("invalid hash: %x, expect: %x", d.h.Sum64(), d.hash)
+		}
+	}
+
+	return n, err
+}
+
+func (d *Data) Close() error {
+	return d._fd.Close()
+}
+
+func (d *Data) ReadAllAndClose() []byte {
+	buf, _ := ioutil.ReadAll(d)
+	d.Close()
+	return buf
 }

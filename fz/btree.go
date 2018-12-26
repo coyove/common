@@ -48,6 +48,7 @@
 package fz
 
 import (
+	"hash/fnv"
 	"io"
 	"os"
 	"sort"
@@ -183,8 +184,7 @@ func (n *nodeBlock) maybeSplitChild(i int) bool {
 // insert inserts an item into the subtree rooted at this node, making sure
 // no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
 // be found/replaced by insert, it will be returned.
-func (n *nodeBlock) insert(key uint128, value int64) error {
-	p := pair{key: key, value: value}
+func (n *nodeBlock) insert(key uint128) error {
 	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
 	if found {
@@ -192,8 +192,12 @@ func (n *nodeBlock) insert(key uint128, value int64) error {
 	}
 
 	if n.childrenSize == 0 {
+		p, err := n._super.writePair(key)
+		if err != nil {
+			return err
+		}
 		n.insertItemAt(i, p)
-		return ErrKeyInserted
+		return nil
 	}
 
 	if n.maybeSplitChild(i) {
@@ -213,7 +217,7 @@ func (n *nodeBlock) insert(key uint128, value int64) error {
 	if err != nil {
 		return err
 	}
-	return ch.insert(key, value)
+	return ch.insert(key)
 }
 
 func (n *nodeBlock) child(i int) (*nodeBlock, error) {
@@ -257,22 +261,25 @@ func (n *nodeBlock) sync() (err error) {
 
 	x := *(*[nodeBlockSize]byte)(unsafe.Pointer(n))
 	_, err = n._super._fd.Write(x[:])
+	if err == nil {
+		n._snapshotPending = x
+	}
 	return
 }
 
 // get finds the given key in the subtree and returns it.
-func (n *nodeBlock) get(key uint128) (int64, error) {
+func (n *nodeBlock) get(key uint128) (pair, error) {
 	i, found := n.find(key)
 	if found {
-		return n.items[i].value, nil
+		return n.items[i], nil
 	} else if n.childrenSize > 0 {
 		ch, err := n.child(i)
 		if err != nil {
-			return 0, err
+			return pair{}, err
 		}
 		return ch.get(key)
 	}
-	return 0, ErrKeyNotFound
+	return pair{}, ErrKeyNotFound
 }
 
 func (sb *SuperBlock) writePair(key uint128) (pair, error) {
@@ -285,31 +292,63 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		return pair{}, err
 	}
 
-	n, err := io.Copy(sb._fd, sb._reader)
+	buf := make([]byte, 32*1024)
+	written := int64(0)
+	h := fnv.New64()
+	for {
+		nr, er := sb._reader.Read(buf)
+		if nr > 0 {
+			nw, ew := sb._fd.Write(buf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+				h.Write(buf[0:nr])
+			}
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
 	if err != nil {
 		return pair{}, err
 	}
 
-	p := pair{key: key, tstamp: uint32(time.Now().Unix()), value: v, size: n}
+	p := pair{key: key, tstamp: uint32(time.Now().Unix()), value: v, size: written, hash: h.Sum64()}
 	return p, nil
 }
 
-func (sb *SuperBlock) Put(k uint128, v int64) error {
+func (sb *SuperBlock) Put(k uint128, r io.Reader) error {
 	sb._lock.Lock()
 	defer sb._lock.Unlock()
 
 	var err error
+	sb._reader = r
 
 	if sb.rootNode == 0 && sb._root == nil {
+		p, err := sb.writePair(k)
+		if err != nil {
+			return err
+		}
+
 		sb._root = sb.newNode()
 		sb._root.itemsSize = 1
-		sb._root.items[0] = pair{key: k, value: v}
+		sb._root.items[0] = p
 		sb._root.markDirty()
 		sb.count++
 		return sb.syncDirties()
 	}
 
-	if sb._root == nil {
+	if sb.rootNode != 0 && sb._root == nil {
 		sb._root, err = sb.loadNodeBlock(sb.rootNode)
 		if err != nil {
 			return err
@@ -325,13 +364,11 @@ func (sb *SuperBlock) Put(k uint128, v int64) error {
 		sb._root.markDirty()
 	}
 
-	switch err := sb._root.insert(k, v); err {
-	case ErrKeyInserted:
-		sb.count++
-	default:
+	if err := sb._root.insert(k); err != nil {
 		return err
 	}
 
+	sb.count++
 	if err := sb.syncDirties(); err != nil {
 		return err
 	}
@@ -339,23 +376,40 @@ func (sb *SuperBlock) Put(k uint128, v int64) error {
 	return nil
 }
 
-func (sb *SuperBlock) Get(key uint128) (int64, error) {
+func (sb *SuperBlock) Get(key uint128) (*Data, error) {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
 	var err error
-	if sb.rootNode == 0 {
-		return 0, ErrKeyNotFound
+	if sb.rootNode == 0 && sb._root == nil {
+		return nil, ErrKeyNotFound
 	}
 
-	if sb._root == nil {
+	if sb.rootNode != 0 && sb._root == nil {
 		sb._root, err = sb.loadNodeBlock(sb.rootNode)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 
-	return sb._root.get(key)
+	node, err := sb._root.get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	d := &Data{}
+	d._fd, err = os.OpenFile(sb._filename, os.O_RDONLY, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := d._fd.Seek(node.value, 0); err != nil {
+		return nil, err
+	}
+
+	d.h = fnv.New64()
+	d.pair = node
+	return d, nil
 }
 
 func (sb *SuperBlock) Commit() error {
@@ -367,6 +421,65 @@ func (sb *SuperBlock) Commit() error {
 	defer sb._lock.Unlock()
 
 	return sb._syncDirties()
+}
+
+func (n *nodeBlock) iterate(callback func(key uint128, data *Data) error) error {
+	for i := uint16(0); i < n.itemsSize; i++ {
+		if n.childrenSize > 0 {
+			ch, err := n.child(int(i))
+			if err != nil {
+				return err
+			}
+			if err := ch.iterate(callback); err != nil {
+				return err
+			}
+		}
+
+		var err error
+		d := &Data{}
+		d._fd, err = os.OpenFile(n._super._filename, os.O_RDONLY, 0666)
+		if err != nil {
+			return err
+		}
+
+		if _, err := d._fd.Seek(n.items[i].value, 0); err != nil {
+			return err
+		}
+
+		d.h = fnv.New64()
+		d.pair = n.items[i]
+		callback(n.items[i].key, d)
+	}
+	if n.childrenSize > 0 {
+		ch, err := n.child(int(n.childrenSize - 1))
+		if err != nil {
+			return err
+		}
+
+		if err := ch.iterate(callback); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (sb *SuperBlock) Walk(callback func(key uint128, data *Data) error) error {
+	sb._lock.RLock()
+	defer sb._lock.RUnlock()
+
+	var err error
+	if sb.rootNode == 0 && sb._root == nil {
+		return nil
+	}
+
+	if sb._root == nil {
+		sb._root, err = sb.loadNodeBlock(sb.rootNode)
+		if err != nil {
+			return err
+		}
+	}
+
+	return sb._root.iterate(callback)
 }
 
 func (sb *SuperBlock) syncDirties() error {
@@ -398,6 +511,10 @@ func (sb *SuperBlock) _syncDirties() error {
 				return err
 			}
 			delete(sb._dirtyNodes, node)
+
+			if testCase1 {
+				return testError
+			}
 		}
 	}
 
