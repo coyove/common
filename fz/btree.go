@@ -48,6 +48,7 @@
 package fz
 
 import (
+	"bytes"
 	"hash/fnv"
 	"io"
 	"os"
@@ -267,6 +268,15 @@ func (n *nodeBlock) sync() (err error) {
 	return
 }
 
+func (n *nodeBlock) commitPendingSnapshot() {
+	n._snapshot = n._snapshotPending
+}
+
+func (n *nodeBlock) revertToLastSnapshot() {
+	*(*[nodeBlockSize]byte)(unsafe.Pointer(n)) = n._snapshot
+	n._children = [maxChildren]*nodeBlock{}
+}
+
 // get finds the given key in the subtree and returns it.
 func (n *nodeBlock) get(key uint128) (pair, error) {
 	i, found := n.find(key)
@@ -285,6 +295,10 @@ func (n *nodeBlock) get(key uint128) (pair, error) {
 func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 	if sb._reader == nil {
 		panic("wtf")
+	}
+
+	if testCase1 {
+		return pair{}, testError
 	}
 
 	v, err := sb._fd.Seek(0, os.SEEK_END)
@@ -327,13 +341,22 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 	return p, nil
 }
 
-func (sb *SuperBlock) Put(k uint128, r io.Reader) error {
+func (sb *SuperBlock) Put(k uint128, r io.Reader) (err error) {
 	sb._lock.Lock()
 	defer sb._lock.Unlock()
+	if sb._flag&LsCritical > 0 {
+		return ErrCriticalState
+	}
 
-	var err error
+	fatal := false
+
+	defer func() {
+		if err != nil && !fatal {
+			sb.revertDirties()
+		}
+	}()
+
 	sb._reader = r
-
 	if sb.rootNode == 0 && sb._root == nil {
 		p, err := sb.writePair(k)
 		if err != nil {
@@ -344,8 +367,7 @@ func (sb *SuperBlock) Put(k uint128, r io.Reader) error {
 		sb._root.itemsSize = 1
 		sb._root.items[0] = p
 		sb._root.markDirty()
-		sb.count++
-		return sb.syncDirties()
+		goto SYNC
 	}
 
 	if sb.rootNode != 0 && sb._root == nil {
@@ -368,8 +390,10 @@ func (sb *SuperBlock) Put(k uint128, r io.Reader) error {
 		return err
 	}
 
+SYNC:
 	sb.count++
 	if err := sb.syncDirties(); err != nil {
+		fatal = true
 		return err
 	}
 
@@ -379,6 +403,10 @@ func (sb *SuperBlock) Put(k uint128, r io.Reader) error {
 func (sb *SuperBlock) Get(key uint128) (*Data, error) {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
+
+	if sb._flag&LsCritical > 0 {
+		return nil, ErrCriticalState
+	}
 
 	var err error
 	if sb.rootNode == 0 && sb._root == nil {
@@ -415,6 +443,10 @@ func (sb *SuperBlock) Get(key uint128) (*Data, error) {
 func (sb *SuperBlock) Commit() error {
 	if sb._flag&LsAsyncCommit == 0 {
 		panic("SuperBlock is not in async state")
+	}
+
+	if sb._flag&LsCritical > 0 {
+		return ErrCriticalState
 	}
 
 	sb._lock.Lock()
@@ -491,16 +523,17 @@ func (sb *SuperBlock) syncDirties() error {
 }
 
 func (sb *SuperBlock) _syncDirties() error {
-	sb._masterSnapshot.Reset()
-	sb._masterSnapshot.Write(sb._snapshot[:])
+	buf := bytes.Buffer{}
+	buf.Write(sb._snapshot[:])
 
 	for node := range sb._dirtyNodes {
 		if node.offset == 0 {
 			continue
 		}
-		sb._masterSnapshot.Write(node._snapshot[:])
+		buf.Write(node._snapshot[:])
 	}
 
+	nodes := make([]*nodeBlock, 0, len(sb._dirtyNodes))
 	for len(sb._dirtyNodes) > 0 {
 		for node := range sb._dirtyNodes {
 			if !node.areChildrenSynced() {
@@ -508,16 +541,34 @@ func (sb *SuperBlock) _syncDirties() error {
 			}
 
 			if err := node.sync(); err != nil {
-				return err
+				sb.SetFlag(LsCritical)
+				return &Fatal{Err: err, Snapshot: buf.Bytes()}
 			}
-			delete(sb._dirtyNodes, node)
 
-			if testCase1 {
-				return testError
-			}
+			nodes = append(nodes, node)
+			delete(sb._dirtyNodes, node)
 		}
 	}
 
 	sb.rootNode = sb._root.offset
-	return sb.Sync()
+	err := sb.Sync()
+	if err == nil {
+		// all clear, let's update the snapshots
+		for _, node := range nodes {
+			node.commitPendingSnapshot()
+		}
+		sb.commitPendingSnapshot()
+	} else {
+		sb.SetFlag(LsCritical)
+		err = &Fatal{Err: err, Snapshot: buf.Bytes()}
+	}
+	return err
+}
+
+func (sb *SuperBlock) revertDirties() {
+	for node := range sb._dirtyNodes {
+		node.revertToLastSnapshot()
+		delete(sb._dirtyNodes, node)
+	}
+	sb.revertToLastSnapshot()
 }

@@ -1,7 +1,6 @@
 package fz
 
 import (
-	"bytes"
 	"fmt"
 	"hash"
 	"hash/fnv"
@@ -21,16 +20,26 @@ var (
 	testError = fmt.Errorf("test")
 )
 
+type Fatal struct {
+	Err      error
+	Snapshot []byte
+}
+
+func (f *Fatal) Error() string {
+	return f.Err.Error()
+}
+
 var (
 	superBlockMagic        = [4]byte{'z', 'z', 'z', '0'}
 	nodeMagic              = [4]byte{'x', 'x', 'x', '0'}
 	_one            uint16 = 1
 	_endian         byte   = *(*byte)(unsafe.Pointer(&_one))
 
-	ErrWrongMagic  = fmt.Errorf("wrong magic code")
-	ErrKeyNotFound = fmt.Errorf("key not found")
-	ErrKeyInserted = fmt.Errorf("key inserted")
-	ErrKeyExisted  = fmt.Errorf("key already existed")
+	ErrWrongMagic    = fmt.Errorf("wrong magic code")
+	ErrKeyNotFound   = fmt.Errorf("key not found")
+	ErrKeyInserted   = fmt.Errorf("key inserted")
+	ErrKeyExisted    = fmt.Errorf("key already existed")
+	ErrCriticalState = fmt.Errorf("critical state")
 )
 
 const itemSize = 56
@@ -40,6 +49,7 @@ const nodeBlockSizeFast = 16
 
 const (
 	LsAsyncCommit = 1 << iota
+	LsCritical
 )
 
 type SuperBlock struct {
@@ -63,7 +73,6 @@ type SuperBlock struct {
 
 	_snapshot        [superBlockSize]byte
 	_snapshotPending [superBlockSize]byte
-	_masterSnapshot  bytes.Buffer
 }
 
 type nodeBlock struct {
@@ -107,8 +116,21 @@ func (b *SuperBlock) addDirtyNode(n *nodeBlock) {
 	b._dirtyNodes[n] = true
 }
 
+func (b *SuperBlock) commitPendingSnapshot() {
+	b._snapshot = b._snapshotPending
+}
+
+func (b *SuperBlock) revertToLastSnapshot() {
+	*(*[superBlockSize]byte)(unsafe.Pointer(b)) = b._snapshot
+	b._root = nil
+}
+
 func (b *SuperBlock) SetFlag(flag uint32) {
 	b._flag |= flag
+}
+
+func (b *SuperBlock) UnsetFlag(flag uint32) {
+	b._flag &= ^flag
 }
 
 func (b *SuperBlock) Sync() error {
@@ -117,13 +139,16 @@ func (b *SuperBlock) Sync() error {
 	h.Write(blockHdr[:superBlockSize-8])
 	b.superHash = h.Sum64()
 	blockHdr = *(*[superBlockSize]byte)(unsafe.Pointer(b))
-	b._snapshot = blockHdr
 
 	b._fd.Seek(0, 0)
 	if _, err := b._fd.Write(blockHdr[:]); err != nil {
 		return err
 	}
-	return b._fd.Sync()
+	err := b._fd.Sync()
+	if err == nil {
+		b._snapshotPending = blockHdr
+	}
+	return err
 }
 
 func (b *SuperBlock) Count() int {
@@ -187,10 +212,9 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 		if sb.rootNode >= fi.Size() {
 			return nil, fmt.Errorf("corrupted root node")
 		}
-
-		sb._snapshot = blockHdr
 	}
 
+	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
 	return sb, nil
 }
 
@@ -221,10 +245,6 @@ func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
 
 	n._snapshot = x
 	return n, nil
-}
-
-func (sb *SuperBlock) DumpSnapshot() []byte {
-	return sb._masterSnapshot.Bytes()
 }
 
 func (b *nodeBlock) fastchild(i int) (*nodeBlock, error) {
