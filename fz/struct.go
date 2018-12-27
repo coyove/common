@@ -79,8 +79,9 @@ type SuperBlock struct {
 	_cacheFds   chan *os.File
 	_flag       uint32
 
-	_snapshot        [superBlockSize]byte
-	_snapshotPending [superBlockSize]byte
+	_snapshot          [superBlockSize]byte
+	_snapshotPending   [superBlockSize]byte
+	_snapshotChPending map[*nodeBlock][nodeBlockSize]byte
 }
 
 type nodeBlock struct {
@@ -91,10 +92,9 @@ type nodeBlock struct {
 	items          [maxItems]pair
 	childrenOffset [maxChildren]int64
 
-	_children        [maxChildren]*nodeBlock
-	_super           *SuperBlock
-	_snapshot        [nodeBlockSize]byte
-	_snapshotPending [nodeBlockSize]byte
+	_children [maxChildren]*nodeBlock
+	_super    *SuperBlock
+	_snapshot [nodeBlockSize]byte
 }
 
 type pair struct {
@@ -127,10 +127,6 @@ func (b *SuperBlock) newNode() *nodeBlock {
 
 func (b *SuperBlock) addDirtyNode(n *nodeBlock) {
 	b._dirtyNodes[n] = true
-}
-
-func (b *SuperBlock) commitPendingSnapshot() {
-	b._snapshot = b._snapshotPending
 }
 
 func (b *SuperBlock) revertToLastSnapshot() {
@@ -232,6 +228,7 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 	}
 
 	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
+	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
 	sb._cacheFds = make(chan *os.File, maxFds)
 
 	for i := 0; i < maxFds; i++ {

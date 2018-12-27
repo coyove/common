@@ -256,13 +256,9 @@ func (n *nodeBlock) sync() (err error) {
 	x := *(*[nodeBlockSize]byte)(unsafe.Pointer(n))
 	_, err = n._super._fd.Write(x[:])
 	if err == nil {
-		n._snapshotPending = x
+		n._super._snapshotChPending[n] = x
 	}
 	return
-}
-
-func (n *nodeBlock) commitPendingSnapshot() {
-	n._snapshot = n._snapshotPending
 }
 
 func (n *nodeBlock) revertToLastSnapshot() {
@@ -601,11 +597,15 @@ func (sb *SuperBlock) _syncDirties() error {
 	sb.rootNode = sb._root.offset
 	err := sb.Sync()
 	if err == nil {
-		// all clear, let's update the snapshots
+		// all clear, let's commit the snapshots
 		for _, node := range nodes {
-			node.commitPendingSnapshot()
+			node._snapshot = sb._snapshotChPending[node]
+			delete(sb._snapshotChPending, node)
 		}
-		sb.commitPendingSnapshot()
+		if len(sb._snapshotChPending) != 0 {
+			panic("shouldn't happen")
+		}
+		sb._snapshot = sb._snapshotPending
 	} else {
 		sb.SetFlag(LsCritical)
 		err = &Fatal{Err: err, Snapshot: buf.Bytes()}
