@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/coyove/common/lru"
 	"github.com/coyove/common/rand"
 )
 
@@ -39,13 +40,17 @@ var (
 	ErrKeyNotFound   = fmt.Errorf("key not found")
 	ErrKeyInserted   = fmt.Errorf("key inserted")
 	ErrKeyExisted    = fmt.Errorf("key already existed")
+	ErrKeyTooLong    = fmt.Errorf("key too long")
 	ErrCriticalState = fmt.Errorf("critical state")
 )
 
-const itemSize = 56
-const superBlockSize = 64
-const nodeBlockSize = 16 + maxItems*itemSize + maxChildren*8
-const nodeBlockSizeFast = 16
+const (
+	itemSize          = 56
+	superBlockSize    = 64
+	nodeBlockSize     = 16 + maxItems*itemSize + maxChildren*8
+	nodeBlockSizeFast = 16
+	maxFds            = 4
+)
 
 const (
 	LsAsyncCommit = 1 << iota
@@ -69,6 +74,9 @@ type SuperBlock struct {
 	_root       *nodeBlock
 	_lock       sync.RWMutex
 	_reader     io.Reader
+	_keystr     string
+	_cache      *lru.Cache
+	_cacheFds   chan *os.File
 	_flag       uint32
 
 	_snapshot        [superBlockSize]byte
@@ -101,8 +109,13 @@ type pair struct {
 
 type Data struct {
 	pair
-	_fd *os.File
-	h   hash.Hash64
+	_fd     *os.File
+	_closed bool
+	_super  *SuperBlock
+	h       hash.Hash64
+	name    string
+	depth   int
+	index   int
 }
 
 func (b *SuperBlock) newNode() *nodeBlock {
@@ -157,6 +170,10 @@ func (b *SuperBlock) Count() int {
 
 func (b *SuperBlock) Close() {
 	b._fd.Close()
+	for i := 0; i < maxFds; i++ {
+		f := <-b._cacheFds
+		f.Close()
+	}
 }
 
 func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
@@ -215,6 +232,18 @@ func OpenFZ(path string, create bool) (_sb *SuperBlock, _err error) {
 	}
 
 	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
+	sb._cacheFds = make(chan *os.File, maxFds)
+
+	for i := 0; i < maxFds; i++ {
+
+		f, err := os.OpenFile(path, os.O_RDONLY, 0666)
+		if err != nil {
+			return nil, err
+		}
+
+		sb._cacheFds <- f
+	}
+
 	return sb, nil
 }
 
@@ -333,12 +362,20 @@ func (d *Data) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (d *Data) Close() error {
-	return d._fd.Close()
+func (d *Data) Close() {
+	if d._closed {
+		return
+	}
+	d._closed = true
+	d._super._cacheFds <- d._fd
 }
 
 func (d *Data) ReadAllAndClose() []byte {
 	buf, _ := ioutil.ReadAll(d)
 	d.Close()
 	return buf
+}
+
+func (d *Data) Name() string {
+	return d.name
 }

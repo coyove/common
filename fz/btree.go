@@ -49,25 +49,18 @@ package fz
 
 import (
 	"bytes"
+	"encoding/binary"
 	"hash/fnv"
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 	"unsafe"
 )
 
 const maxItems = 63
 const maxChildren = maxItems + 1
-
-type uint128 [2]uint64
-
-func (l uint128) less(r uint128) bool {
-	if l[0] == r[0] {
-		return l[1] < r[1]
-	}
-	return l[0] < r[0]
-}
 
 func (s *nodeBlock) markDirty() {
 	s._super.addDirtyNode(s)
@@ -118,6 +111,7 @@ func (s *nodeBlock) insertChildAt(index int, n *nodeBlock) {
 	copy(s._children[index+1:], s._children[index:])
 	copy(s.childrenOffset[index+1:], s.childrenOffset[index:])
 	s._children[index] = n
+	s.childrenOffset[index] = n.offset
 	s.childrenSize++
 	s.markDirty()
 }
@@ -228,7 +222,6 @@ func (n *nodeBlock) child(i int) (*nodeBlock, error) {
 			return nil, nil
 		}
 
-		//log.Println(n.childrenOffset[i])
 		n._children[i], err = n._super.loadNodeBlock(n.childrenOffset[i])
 	}
 	return n._children[i], err
@@ -306,6 +299,15 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		return pair{}, err
 	}
 
+	var keystrbuf [2]byte
+	binary.BigEndian.PutUint16(keystrbuf[:], uint16(len(sb._keystr)))
+	if _, err := sb._fd.Write(keystrbuf[:]); err != nil {
+		return pair{}, err
+	}
+	if _, err := io.Copy(sb._fd, strings.NewReader(sb._keystr)); err != nil {
+		return pair{}, err
+	}
+
 	buf := make([]byte, 32*1024)
 	written := int64(0)
 	h := fnv.New64()
@@ -341,15 +343,18 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 	return p, nil
 }
 
-func (sb *SuperBlock) Put(k uint128, r io.Reader) (err error) {
+func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 	sb._lock.Lock()
 	defer sb._lock.Unlock()
+
 	if sb._flag&LsCritical > 0 {
 		return ErrCriticalState
 	}
+	if len(key) >= 65536 {
+		return ErrKeyTooLong
+	}
 
 	fatal := false
-
 	defer func() {
 		if err != nil && !fatal {
 			sb.revertDirties()
@@ -357,6 +362,9 @@ func (sb *SuperBlock) Put(k uint128, r io.Reader) (err error) {
 	}()
 
 	sb._reader = r
+	sb._keystr = key
+	k := hashString(key)
+
 	if sb.rootNode == 0 && sb._root == nil {
 		p, err := sb.writePair(k)
 		if err != nil {
@@ -400,13 +408,44 @@ SYNC:
 	return nil
 }
 
-func (sb *SuperBlock) Get(key uint128) (*Data, error) {
+func (sb *SuperBlock) Get(key string) (*Data, error) {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
 	if sb._flag&LsCritical > 0 {
 		return nil, ErrCriticalState
 	}
+
+	load := func(node pair) (*Data, error) {
+		d := &Data{}
+		d._fd = <-sb._cacheFds
+		d._super = sb
+
+		if _, err := d._fd.Seek(node.value, 0); err != nil {
+			return nil, err
+		}
+
+		var keystrbuf [2]byte
+		if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
+			return nil, err
+		}
+		ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
+		keyname := make([]byte, ln)
+		if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
+			return nil, err
+		}
+
+		d.h = fnv.New64()
+		d.pair = node
+		d.name = string(keyname)
+		return d, nil
+	}
+
+	//	if cached, ok := sb._cache.Get(key); ok {
+	//		return load(cached.(pair))
+	//	}
+
+	k := hashString(key)
 
 	var err error
 	if sb.rootNode == 0 && sb._root == nil {
@@ -420,24 +459,13 @@ func (sb *SuperBlock) Get(key uint128) (*Data, error) {
 		}
 	}
 
-	node, err := sb._root.get(key)
+	node, err := sb._root.get(k)
 	if err != nil {
 		return nil, err
 	}
 
-	d := &Data{}
-	d._fd, err = os.OpenFile(sb._filename, os.O_RDONLY, 0666)
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := d._fd.Seek(node.value, 0); err != nil {
-		return nil, err
-	}
-
-	d.h = fnv.New64()
-	d.pair = node
-	return d, nil
+	//	sb._cache.Add(key, node)
+	return load(node)
 }
 
 func (sb *SuperBlock) Commit() error {
@@ -455,47 +483,67 @@ func (sb *SuperBlock) Commit() error {
 	return sb._syncDirties()
 }
 
-func (n *nodeBlock) iterate(callback func(key uint128, data *Data) error) error {
+func (n *nodeBlock) iterate(callback func(key uint128, data *Data) error, readData bool, depth int) error {
 	for i := uint16(0); i < n.itemsSize; i++ {
 		if n.childrenSize > 0 {
 			ch, err := n.child(int(i))
 			if err != nil {
 				return err
 			}
-			if err := ch.iterate(callback); err != nil {
+			if err := ch.iterate(callback, readData, depth+1); err != nil {
 				return err
 			}
 		}
 
-		var err error
-		d := &Data{}
-		d._fd, err = os.OpenFile(n._super._filename, os.O_RDONLY, 0666)
-		if err != nil {
-			return err
+		var d *Data
+
+		if readData {
+			d = &Data{}
+			d._super = n._super
+			d._fd = <-n._super._cacheFds
+
+			if _, err := d._fd.Seek(n.items[i].value, 0); err != nil {
+				return err
+			}
+
+			var keystrbuf [2]byte
+			if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
+				return err
+			}
+			ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
+			keyname := make([]byte, ln)
+			if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
+				return err
+			}
+
+			d.h = fnv.New64()
+			d.pair = n.items[i]
+			d.name = string(keyname)
+			d.depth = depth
+			d.index = int(i)
 		}
 
-		if _, err := d._fd.Seek(n.items[i].value, 0); err != nil {
-			return err
-		}
-
-		d.h = fnv.New64()
-		d.pair = n.items[i]
 		callback(n.items[i].key, d)
+
+		if d != nil {
+			d.Close()
+		}
 	}
+
 	if n.childrenSize > 0 {
 		ch, err := n.child(int(n.childrenSize - 1))
 		if err != nil {
 			return err
 		}
 
-		if err := ch.iterate(callback); err != nil {
+		if err := ch.iterate(callback, readData, depth+1); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (sb *SuperBlock) Walk(callback func(key uint128, data *Data) error) error {
+func (sb *SuperBlock) Walk(readData bool, callback func(key uint128, data *Data) error) error {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
@@ -511,7 +559,7 @@ func (sb *SuperBlock) Walk(callback func(key uint128, data *Data) error) error {
 		}
 	}
 
-	return sb._root.iterate(callback)
+	return sb._root.iterate(callback, readData, 0)
 }
 
 func (sb *SuperBlock) syncDirties() error {

@@ -41,13 +41,13 @@ func TestOpenFZ(t *testing.T) {
 
 	r := rand.New()
 	for i := 0; i < COUNT; i++ {
-		f.Put(uint128{r.Uint64(), r.Uint64()}, genReader(r))
+		f.Add(strconv.Itoa(i), genReader(r))
 		if i%100 == 0 {
 			log.Println(i)
 		}
 	}
 
-	f.Put(uint128{0, 13739}, genReader(marker))
+	f.Add("13739", genReader(marker))
 	f.Close()
 
 	f, err = OpenFZ("test", false)
@@ -55,10 +55,26 @@ func TestOpenFZ(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	v, _ := f.Get(uint128{0, 13739})
+	v, _ := f.Get("13739")
 	buf := v.ReadAllAndClose()
 	if !bytes.Equal(buf, marker) {
 		t.Error(buf)
+	}
+
+	//zzz := map[string]int{}
+	//zzzi := 0
+	//f.Walk(func(k uint128, d *Data) error {
+	//	zzz[d.name]++
+	//	log.Println(zzzi, k, d.name, d.depth, d.index)
+	//	zzzi++
+	//	return nil
+	//})
+	//log.Println(len(zzz), zzz)
+
+	if v, err := f.Get(strconv.Itoa(COUNT / 2)); err != nil {
+		t.Error(err)
+	} else {
+		v.Close()
 	}
 
 	f.Close()
@@ -71,12 +87,12 @@ func TestOpenFZ2(t *testing.T) {
 	}
 
 	for i := 0; i < 256; i++ {
-		f.Put(uint128{0, uint64(i)}, genReader(int64(i)))
+		f.Add(strconv.Itoa(i), genReader(int64(i)))
 		if f.Count() != i+1 {
 			t.Error("Count() failed")
 		}
 		for j := 0; j < i; j++ {
-			v, _ := f.Get(uint128{0, uint64(j)})
+			v, _ := f.Get(strconv.Itoa(j))
 			buf := v.ReadAllAndClose()
 			vj := int64(binary.BigEndian.Uint64(buf))
 
@@ -99,17 +115,17 @@ func TestOpenFZ2Async(t *testing.T) {
 	f.SetFlag(LsAsyncCommit)
 
 	for i := 0; i < COUNT; i++ {
-		f.Put(uint128{0, uint64(i)}, genReader(int64(i)))
+		f.Add(strconv.Itoa(i), genReader(int64(i)))
 		if i%10 == 0 {
 			f.Commit()
 		}
 		m := map[uint128]int64{}
 		for j := 0; j <= i; j++ {
-			v, _ := f.Get(uint128{0, uint64(j)})
+			v, _ := f.Get(strconv.Itoa(j))
 			buf := v.ReadAllAndClose()
 			m[v.key] = int64(binary.BigEndian.Uint64(buf))
 		}
-		f.Walk(func(key uint128, value *Data) error {
+		f.Walk(true, func(key uint128, value *Data) error {
 			v := int64(binary.BigEndian.Uint64(value.ReadAllAndClose()))
 			if v != m[key] {
 				t.Error(key, v, m[key], len(m))
@@ -125,7 +141,7 @@ func TestOpenFZ2Async(t *testing.T) {
 
 	f.Commit()
 	for j := 0; j < COUNT; j++ {
-		v, _ := f.Get(uint128{0, uint64(j)})
+		v, _ := f.Get(strconv.Itoa(j))
 
 		buf := v.ReadAllAndClose()
 		vj := int64(binary.BigEndian.Uint64(buf))
@@ -147,19 +163,13 @@ func BenchmarkFZ(b *testing.B) {
 
 	r := rand.New()
 	for i := 0; i < b.N; i++ {
-		f.Get(uint128{0, r.Uint64()})
+		v, _ := f.Get(strconv.Itoa(r.Intn(COUNT)))
+		if v != nil {
+			v.ReadAllAndClose()
+		}
 	}
 
 	f.Close()
-}
-
-func TestA_Begin(t *testing.T) {
-	os.Mkdir("test2", 0777)
-	rbuf := make([]byte, 8)
-
-	for i := 0; i < COUNT; i++ {
-		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
-	}
 }
 
 func BenchmarkFile(b *testing.B) {
@@ -172,9 +182,30 @@ func BenchmarkFile(b *testing.B) {
 		io.ReadAtLeast(f, buf, 8)
 		f.Close()
 	}
-
 }
 
-func BenchmarkZ_End(b *testing.B) {
+func TestMain(m *testing.M) {
 	os.RemoveAll("test2")
+	os.Remove("test")
+	os.Remove("map")
+
+	os.Mkdir("test2", 0777)
+	rbuf := make([]byte, 8)
+	for i := 0; i < COUNT; i++ {
+		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
+	}
+
+	f, _ := OpenFZ("test", true)
+	r := rand.New()
+	for i := 0; i < COUNT; i++ {
+		f.Add(strconv.Itoa(i), genReader(r))
+	}
+
+	f.Close()
+
+	code := m.Run()
+
+	os.RemoveAll("test2")
+	os.Remove("test")
+	os.Exit(code)
 }
