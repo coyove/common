@@ -20,6 +20,7 @@ const (
 	itemSize       = 56
 	superBlockSize = 72
 	nodeBlockSize  = 16 + maxItems*itemSize + maxChildren*8
+	snapshotSize   = superBlockSize + 4*nodeBlockSize + 16
 )
 
 type SuperBlock struct {
@@ -92,7 +93,7 @@ func (b *SuperBlock) sync() error {
 		err = b._fd.Sync()
 	} else {
 		copy(b._mmap, blockHdr[:])
-		err = b._mmap.Flush()
+		//err = b._mmap.Flush()
 	}
 	if err == nil {
 		b._snapshotPending = blockHdr

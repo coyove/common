@@ -40,7 +40,7 @@ var marker = []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
 func TestOpenFZ(t *testing.T) {
 	os.Remove("test")
-	f, err := OpenFZ("test", true)
+	f, err := Open("test", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestOpenFZ(t *testing.T) {
 	f.Add("13739", genReader(marker))
 	f.Close()
 
-	f, err = OpenFZ("test", false)
+	f, err = Open("test", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestOpenFZ(t *testing.T) {
 }
 
 func TestOpenFZ2(t *testing.T) {
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestOpenFZ2(t *testing.T) {
 }
 
 func TestOpenFZ2Random(t *testing.T) {
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestOpenFZ2Random(t *testing.T) {
 		if r.Intn(5) == 1 {
 			f.Commit()
 			f.Close()
-			f, err = OpenFZ("map", false)
+			f, err = Open("map", nil)
 			f.SetFlag(LsAsyncCommit)
 			if f == nil {
 				t.Fatal(err)
@@ -142,7 +142,7 @@ func TestOpenFZ2Random(t *testing.T) {
 	f.Commit()
 	f.Close()
 
-	f, err = OpenFZ("map", false)
+	f, err = Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -161,18 +161,13 @@ func TestOpenFZ2Random(t *testing.T) {
 }
 
 func TestOpenFZ2Async(t *testing.T) {
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", &Options{MMapSize: 1024, MaxFds: 4})
 	if f == nil {
 		t.Fatal(err)
 	}
 
-	f.SetFlag(LsAsyncCommit)
-
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i), genReader(int64(i)))
-		if i%10 == 0 {
-			f.Commit()
-		}
 		m := map[uint128]int64{}
 		for j := 0; j <= i; j++ {
 			v, _ := f.Get(strconv.Itoa(j))
@@ -197,7 +192,6 @@ func TestOpenFZ2Async(t *testing.T) {
 	}
 	fmt.Print("\r")
 
-	f.Commit()
 	for j := 0; j < COUNT; j++ {
 		v, _ := f.Get(strconv.Itoa(j))
 
@@ -214,7 +208,7 @@ func TestOpenFZ2Async(t *testing.T) {
 }
 
 func BenchmarkFZ(b *testing.B) {
-	f, err := OpenFZ("test", false)
+	f, err := Open("test", nil)
 	if f == nil {
 		b.Fatal(err)
 	}
@@ -251,19 +245,19 @@ func TestMain(m *testing.M) {
 	rbuf := make([]byte, 8)
 	for i := 0; i < COUNT; i++ {
 		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
-		fmt.Print("\r OS:", i)
+		fmt.Print("\rOS:", i)
 	}
 	fmt.Print("\r        ")
 
-	f, err := OpenFZ("test", true)
+	f, err := Open("test", nil)
 	if err != nil {
 		panic(err)
 	}
 
-	r := rand.New()
+	//r := rand.New()
 	for i := 0; i < COUNT; i++ {
-		f.Add(strconv.Itoa(i), genReader(r))
-		fmt.Print("\r FZ:", i)
+		f.Add(strconv.Itoa(i), genReader(string(rbuf)))
+		fmt.Print("\rFZ:", i)
 	}
 	fmt.Print("\r")
 

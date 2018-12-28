@@ -40,13 +40,28 @@ const (
 	LsCritical
 )
 
-const mmapSize = 1024 * 1024
-
-func OpenFZ(path string, create bool) (*SuperBlock, error) {
-	return OpenFZWithFds(path, create, 4)
+type Options struct {
+	MaxFds   int
+	MMapSize int
 }
 
-func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err error) {
+func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
+	create := true
+	if _, err := os.Stat(path); err == nil {
+		create = false
+	}
+
+	if opt == nil {
+		opt = &Options{
+			MMapSize: 1024 * 1024,
+			MaxFds:   4,
+		}
+	}
+
+	if opt.MMapSize/1024*1024 != opt.MMapSize {
+		return nil, fmt.Errorf("mmap size should be multiple of 1024")
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
@@ -73,8 +88,8 @@ func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err 
 	h := fnv.New64()
 
 	if create {
-		var payload [64]byte
-		for i := 0; i < mmapSize; i += 64 {
+		var payload [1024]byte
+		for i := 0; i < opt.MMapSize; i += 1024 {
 			if _, err := sb._fd.Write(payload[:]); err != nil {
 				return nil, err
 			}
@@ -84,7 +99,7 @@ func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err 
 		sb.magic = superBlockMagic
 		sb.endian = _endian
 		sb.createdAt = uint32(time.Now().Unix())
-		sb.mmapSize = int32(mmapSize)
+		sb.mmapSize = int32(opt.MMapSize)
 		sb.mmapSizeUsed = int32(superBlockSize)
 		copy(sb.salt[:], r.Fetch(16))
 		if err := sb.sync(); err != nil {
@@ -110,14 +125,16 @@ func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err 
 		}
 	}
 
-	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
-	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
-	sb._cacheFds = make(chan *os.File, maxFds)
-	sb._mmap, err = mmap.MapRegion(sb._fd, mmapSize, mmap.RDWR, 0, 0)
+	sb._mmap, err = mmap.MapRegion(sb._fd, int(sb.mmapSize), mmap.RDWR, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 	sb._mmap.Lock()
+
+	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
+	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
+	maxFds := opt.MaxFds
+	sb._cacheFds = make(chan *os.File, maxFds)
 	sb._maxFds = int32(maxFds)
 
 	for i := 0; i < maxFds; i++ {

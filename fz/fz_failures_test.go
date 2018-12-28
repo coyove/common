@@ -8,7 +8,7 @@ import (
 )
 
 func TestFailCase1(t *testing.T) {
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestFailCase1(t *testing.T) {
 	f.Close()
 	os.Remove("map")
 
-	f, err = OpenFZ("map", true)
+	f, err = Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestFailCase1(t *testing.T) {
 }
 
 func TestFailCase1_2(t *testing.T) {
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestFailCase1_2(t *testing.T) {
 func TestFailCase2(t *testing.T) {
 	testCase2 = true
 
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestFailCase2(t *testing.T) {
 
 func TestFailCase3(t *testing.T) {
 
-	f, err := OpenFZ("map", true)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestFailCase3(t *testing.T) {
 
 	Recover("map", fatal.Snapshot)
 
-	f, err = OpenFZ("map", false)
+	f, err = Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
