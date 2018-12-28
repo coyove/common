@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/coyove/common/rand"
+	mmap "github.com/edsrzf/mmap-go"
 )
 
 var (
@@ -38,6 +39,8 @@ const (
 	LsAsyncCommit = 1 << iota
 	LsCritical
 )
+
+const mmapSize = 1024 * 1024
 
 func OpenFZ(path string, create bool) (*SuperBlock, error) {
 	return OpenFZWithFds(path, create, 4)
@@ -70,10 +73,19 @@ func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err 
 	h := fnv.New64()
 
 	if create {
+		var payload [64]byte
+		for i := 0; i < mmapSize; i += 64 {
+			if _, err := sb._fd.Write(payload[:]); err != nil {
+				return nil, err
+			}
+		}
+
 		r := rand.New()
 		sb.magic = superBlockMagic
 		sb.endian = _endian
 		sb.createdAt = uint32(time.Now().Unix())
+		sb.mmapSize = int32(mmapSize)
+		sb.mmapSizeUsed = int32(superBlockSize)
 		copy(sb.salt[:], r.Fetch(16))
 		if err := sb.sync(); err != nil {
 			return nil, err
@@ -101,6 +113,11 @@ func OpenFZWithFds(path string, create bool, maxFds int) (_sb *SuperBlock, _err 
 	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
 	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
 	sb._cacheFds = make(chan *os.File, maxFds)
+	sb._mmap, err = mmap.MapRegion(sb._fd, mmapSize, mmap.RDWR, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	sb._mmap.Lock()
 	sb._maxFds = int32(maxFds)
 
 	for i := 0; i < maxFds; i++ {

@@ -255,7 +255,11 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Print("\r        ")
 
-	f, _ := OpenFZ("test", true)
+	f, err := OpenFZ("test", true)
+	if err != nil {
+		panic(err)
+	}
+
 	r := rand.New()
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i), genReader(r))

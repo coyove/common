@@ -10,28 +10,33 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+
+	mmap "github.com/edsrzf/mmap-go"
 )
 
 var superBlockMagic = [4]byte{'z', 'z', 'z', '0'}
 
 const (
 	itemSize       = 56
-	superBlockSize = 64
+	superBlockSize = 72
 	nodeBlockSize  = 16 + maxItems*itemSize + maxChildren*8
 )
 
 type SuperBlock struct {
-	magic     [4]byte
-	endian    byte
-	reserved  [7]byte
-	createdAt uint32
-	size      int64
-	count     uint64
-	salt      [16]byte
-	rootNode  int64
-	superHash uint64
+	magic        [4]byte
+	endian       byte
+	reserved     [7]byte
+	mmapSize     int32
+	mmapSizeUsed int32
+	createdAt    uint32
+	size         int64
+	count        uint64
+	salt         [16]byte
+	rootNode     int64
+	superHash    uint64
 
 	_fd         *os.File
+	_mmap       mmap.MMap
 	_cacheFds   chan *os.File
 	_filename   string
 	_dirtyNodes map[*nodeBlock]bool
@@ -78,11 +83,17 @@ func (b *SuperBlock) sync() error {
 	b.superHash = h.Sum64()
 	blockHdr = *(*[superBlockSize]byte)(unsafe.Pointer(b))
 
-	b._fd.Seek(0, 0)
-	if _, err := b._fd.Write(blockHdr[:]); err != nil {
-		return err
+	var err error
+	if b._mmap == nil {
+		b._fd.Seek(0, 0)
+		if _, err := b._fd.Write(blockHdr[:]); err != nil {
+			return err
+		}
+		err = b._fd.Sync()
+	} else {
+		copy(b._mmap, blockHdr[:])
+		err = b._mmap.Flush()
 	}
-	err := b._fd.Sync()
 	if err == nil {
 		b._snapshotPending = blockHdr
 	}
@@ -98,6 +109,8 @@ func (b *SuperBlock) Size() int64 {
 }
 
 func (b *SuperBlock) Close() {
+	b._mmap.Unlock()
+	b._mmap.Unmap()
 	b._fd.Close()
 	for i := 0; i < int(b._maxFds); i++ {
 		f := <-b._cacheFds
@@ -409,15 +422,20 @@ func (sb *SuperBlock) Commit() error {
 }
 
 func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
-
-	_, err := sb._fd.Seek(offset, 0)
-	if err != nil {
-		return nil, err
-	}
-
+	var err error
 	var nodeHdr [nodeBlockSize]byte
-	if _, err := io.ReadAtLeast(sb._fd, nodeHdr[:], nodeBlockSize); err != nil {
-		return nil, err
+
+	if offset < int64(sb.mmapSize) {
+		copy(nodeHdr[:], sb._mmap[offset:])
+	} else {
+		_, err = sb._fd.Seek(offset, 0)
+		if err != nil {
+			return nil, err
+		}
+
+		if _, err := io.ReadAtLeast(sb._fd, nodeHdr[:], nodeBlockSize); err != nil {
+			return nil, err
+		}
 	}
 
 	n := &nodeBlock{_super: sb}

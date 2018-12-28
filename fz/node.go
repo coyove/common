@@ -263,20 +263,32 @@ func (n *nodeBlock) areChildrenSynced() bool {
 }
 
 func (n *nodeBlock) sync() (err error) {
+	mm := false
 	if n.offset == 0 {
-		n.offset, err = n._super._fd.Seek(0, os.SEEK_END)
-		if err != nil {
-			return
+		if n._super.mmapSizeUsed+nodeBlockSize < n._super.mmapSize {
+			n.offset = int64(n._super.mmapSizeUsed)
+			n._super.mmapSizeUsed += nodeBlockSize
+			mm = true
+		} else {
+			n.offset, err = n._super._fd.Seek(0, os.SEEK_END)
+			if err != nil {
+				return
+			}
 		}
 	}
 
-	_, err = n._super._fd.Seek(n.offset, 0)
-	if err != nil {
-		return
+	x := *(*[nodeBlockSize]byte)(unsafe.Pointer(n))
+
+	if mm {
+		copy(n._super._mmap[n.offset:], x[:])
+	} else {
+		_, err = n._super._fd.Seek(n.offset, 0)
+		if err != nil {
+			return
+		}
+		_, err = n._super._fd.Write(x[:])
 	}
 
-	x := *(*[nodeBlockSize]byte)(unsafe.Pointer(n))
-	_, err = n._super._fd.Write(x[:])
 	if err == nil {
 		n._super._snapshotChPending[n] = x
 	}
