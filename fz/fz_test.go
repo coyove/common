@@ -26,6 +26,10 @@ func genReader(r interface{}) io.Reader {
 		p := [8]byte{}
 		binary.BigEndian.PutUint64(p[:], uint64(x))
 		buf.Write(p[:])
+	case int:
+		p := [8]byte{}
+		binary.BigEndian.PutUint64(p[:], uint64(x))
+		buf.Write(p[:])
 	}
 	return buf
 }
@@ -91,6 +95,9 @@ func TestOpenFZ2(t *testing.T) {
 		if f.Count() != i+1 {
 			t.Error("Count() failed")
 		}
+		if f.Size() != int64(i+1)*8 {
+			t.Error("Size() failed")
+		}
 		for j := 0; j < i; j++ {
 			v, _ := f.Get(strconv.Itoa(j))
 			buf := v.ReadAllAndClose()
@@ -103,6 +110,58 @@ func TestOpenFZ2(t *testing.T) {
 	}
 
 	f.Close()
+	os.Remove("map")
+}
+
+func TestOpenFZ2Random(t *testing.T) {
+	f, err := OpenFZ("map", true)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.SetFlag(LsAsyncCommit)
+	m := map[string]int{}
+
+	r := rand.New()
+	for i := 0; i < COUNT*2; i++ {
+		ir := int(r.Uint64())
+		si := strconv.Itoa(ir)
+		f.Add(si, genReader(int64(ir)))
+		m[si] = ir
+
+		if r.Intn(3) == 1 {
+			f.Commit()
+		}
+
+		if r.Intn(5) == 1 {
+			f.Commit()
+			f.Close()
+			f, err = OpenFZ("map", false)
+			f.SetFlag(LsAsyncCommit)
+			if f == nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	f.Commit()
+	f.Close()
+
+	f, err = OpenFZ("map", false)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	for k, vi := range m {
+		v2, _ := f.Get(k)
+		v2i := int(binary.BigEndian.Uint64(v2.ReadAllAndClose()))
+		if v2i != vi {
+			t.Error(v2i, vi)
+		}
+	}
+
+	f.Close()
+
 	os.Remove("map")
 }
 
@@ -125,7 +184,8 @@ func TestOpenFZ2Async(t *testing.T) {
 			buf := v.ReadAllAndClose()
 			m[v.key] = int64(binary.BigEndian.Uint64(buf))
 		}
-		f.Walk(true, func(key uint128, value *Data) error {
+		f.Walk(true, func(k string, value *Data) error {
+			key := hashString(k)
 			v := int64(binary.BigEndian.Uint64(value.ReadAllAndClose()))
 			if v != m[key] {
 				t.Error(key, v, m[key], len(m))
