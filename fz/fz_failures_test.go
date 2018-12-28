@@ -112,3 +112,54 @@ func TestFailCase2(t *testing.T) {
 
 	testCase2 = false
 }
+
+func TestFailCase3(t *testing.T) {
+
+	f, err := OpenFZ("map", true)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.SetFlag(LsAsyncCommit)
+	m := map[int]bool{COUNT: true}
+	for i := 0; i < COUNT; i++ {
+		f.Add(strconv.Itoa(i), genReader(int64(i)))
+		m[i] = true
+	}
+	f.Commit()
+	f.UnsetFlag(LsAsyncCommit)
+
+	f.Add(strconv.Itoa(COUNT), genReader(int64(COUNT)))
+	testCase3 = true
+	fatal := f.Add("case3", genReader(0)).(*Fatal)
+	testCase3 = false
+
+	f.Close()
+
+	Recover("map", fatal.Snapshot)
+
+	f, err = OpenFZ("map", false)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	if f.Count() != COUNT+1 {
+		t.Error("Count() failed")
+	}
+
+	f.Walk(true, func(k string, v *Data) error {
+		if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
+			t.Error(k)
+		}
+		i, _ := strconv.Atoi(k)
+		delete(m, i)
+		return nil
+	})
+
+	if len(m) > 0 {
+		t.Error("There shouldn't be any elements inside")
+	}
+
+	f.Close()
+	os.Remove("map")
+}

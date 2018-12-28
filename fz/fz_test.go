@@ -3,9 +3,9 @@ package fz
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"strconv"
 	"testing"
@@ -30,6 +30,8 @@ func genReader(r interface{}) io.Reader {
 		p := [8]byte{}
 		binary.BigEndian.PutUint64(p[:], uint64(x))
 		buf.Write(p[:])
+	case string:
+		buf.WriteString(x)
 	}
 	return buf
 }
@@ -46,10 +48,9 @@ func TestOpenFZ(t *testing.T) {
 	r := rand.New()
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i), genReader(r))
-		if i%100 == 0 {
-			log.Println(i)
-		}
+		fmt.Print("\r", i)
 	}
+	fmt.Print("\r")
 
 	f.Add("13739", genReader(marker))
 	f.Close()
@@ -64,16 +65,6 @@ func TestOpenFZ(t *testing.T) {
 	if !bytes.Equal(buf, marker) {
 		t.Error(buf)
 	}
-
-	//zzz := map[string]int{}
-	//zzzi := 0
-	//f.Walk(func(k uint128, d *Data) error {
-	//	zzz[d.name]++
-	//	log.Println(zzzi, k, d.name, d.depth, d.index)
-	//	zzzi++
-	//	return nil
-	//})
-	//log.Println(len(zzz), zzz)
 
 	if v, err := f.Get(strconv.Itoa(COUNT / 2)); err != nil {
 		t.Error(err)
@@ -142,7 +133,11 @@ func TestOpenFZ2Random(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+
+		fmt.Print("\r", i)
 	}
+
+	fmt.Print("\r")
 
 	f.Commit()
 	f.Close()
@@ -197,7 +192,10 @@ func TestOpenFZ2Async(t *testing.T) {
 		if len(m) > 0 {
 			t.Error("We have a non-empty map")
 		}
+
+		fmt.Print("\r", i)
 	}
+	fmt.Print("\r")
 
 	f.Commit()
 	for j := 0; j < COUNT; j++ {
@@ -253,13 +251,17 @@ func TestMain(m *testing.M) {
 	rbuf := make([]byte, 8)
 	for i := 0; i < COUNT; i++ {
 		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
+		fmt.Print("\r OS:", i)
 	}
+	fmt.Print("\r        ")
 
 	f, _ := OpenFZ("test", true)
 	r := rand.New()
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i), genReader(r))
+		fmt.Print("\r FZ:", i)
 	}
+	fmt.Print("\r")
 
 	f.Close()
 
