@@ -2,9 +2,9 @@ package fz
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
-	"os"
 	"unsafe"
 )
 
@@ -12,7 +12,7 @@ var (
 	ErrInvalidSnapshot = fmt.Errorf("invalid snapshot bytes")
 )
 
-func Recover(path string, snapshot []byte) error {
+func recoverSB(sb *SuperBlock, snapshot []byte) error {
 	if len(snapshot) < superBlockSize+16 {
 		return ErrInvalidSnapshot
 	}
@@ -23,36 +23,30 @@ func Recover(path string, snapshot []byte) error {
 		return ErrInvalidSnapshot
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR, 0666)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	if _, err := f.Seek(0, 0); err != nil {
-		return err
-	}
-
-	if _, err := f.Write(snapshot[:superBlockSize]); err != nil {
-		return err
-	}
+	f := sb._fd
+	copy(sb._mmap, snapshot[:superBlockSize])
 
 	i := superBlockSize
 	for i < len(snapshot)-16 {
 		x := snapshot[i : i+nodeBlockSize]
 		node := (*nodeBlock)(unsafe.Pointer(&x[0]))
 
-		if _, err := f.Seek(node.offset, 0); err != nil {
-			return err
-		}
+		if node.offset > int64(sb.mmapSize) {
+			if _, err := f.Seek(node.offset, 0); err != nil {
+				return err
+			}
 
-		if _, err := f.Write(x); err != nil {
-			return err
+			if _, err := f.Write(x); err != nil {
+				return err
+			}
+		} else {
+			copy(sb._mmap[node.offset:], x)
 		}
 
 		i += nodeBlockSize
 	}
 
+	// all done
+	binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
 	return nil
 }

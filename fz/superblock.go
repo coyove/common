@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"hash/fnv"
 	"io"
+	"io/ioutil"
 	"os"
 	"strings"
 	"sync"
@@ -20,7 +21,9 @@ const (
 	itemSize       = 56
 	superBlockSize = 72
 	nodeBlockSize  = 16 + maxItems*itemSize + maxChildren*8
-	snapshotSize   = superBlockSize + 4*nodeBlockSize + 16
+
+	// normally an insert op won't affect more than 8 nodes, if it does, we have to save snapshot to an external file
+	snapshotSize = 4 + superBlockSize + 8*nodeBlockSize + 16 // <32K
 )
 
 type SuperBlock struct {
@@ -138,15 +141,8 @@ func (sb *SuperBlock) Walk(readData bool, callback func(key string, data *Data) 
 	return sb._root.iterate(callback, readData, 0)
 }
 
+// syncDirties shall only be called by Add()
 func (sb *SuperBlock) syncDirties() error {
-	if sb._flag&LsAsyncCommit > 0 {
-		return nil
-	}
-
-	return sb._syncDirties()
-}
-
-func (sb *SuperBlock) _syncDirties() error {
 	if sb._root == nil {
 		// nothing in the tree
 		return nil
@@ -162,12 +158,36 @@ func (sb *SuperBlock) _syncDirties() error {
 		buf.Write(node._snapshot[:])
 	}
 
+	ext := false
+	h := fnv.New128()
+	h.Write(buf.Bytes())
+	buf.Write(h.Sum(nil))
+
+	binary.BigEndian.PutUint32(sb._mmap[superBlockSize:], uint32(buf.Len()))
+
+	if testCase2 {
+		// normally we won't have a fatal error here,
+		// let's simulate that copy(sb._mmap[superBlockSize+4:], buf.Bytes()) fails
+		return &Fatal{}
+	}
+
+	if buf.Len() <= snapshotSize {
+		copy(sb._mmap[superBlockSize+4:], buf.Bytes())
+	} else {
+		ext = true
+		if err := ioutil.WriteFile(sb._filename+".snapshot", buf.Bytes(), 0666); err != nil {
+			binary.BigEndian.PutUint32(sb._mmap[superBlockSize:], 0)
+			return err
+		}
+	}
+
+	// we have done writing the master snapshot
+	// if the above code failed, we are fine because we will directly revertDirties
+	// if the belowed code failed, we will be in ciritical state, at that time the whole SuperBlock shall be closed
+
 	newFatal := func(err error) *Fatal {
 		sb.SetFlag(LsCritical)
-		h := fnv.New128()
-		h.Write(buf.Bytes())
-		buf.Write(h.Sum(nil))
-		return &Fatal{Err: err, Snapshot: buf.Bytes()}
+		return &Fatal{Err: err}
 	}
 
 	nodes := make([]*nodeBlock, 0, len(sb._dirtyNodes))
@@ -195,7 +215,7 @@ func (sb *SuperBlock) _syncDirties() error {
 	}
 
 	if err == nil {
-		// all clear, let's commit the snapshots
+		// all clear, let's commit the pending snapshots
 		for _, node := range nodes {
 			node._snapshot = sb._snapshotChPending[node]
 			delete(sb._snapshotChPending, node)
@@ -204,6 +224,10 @@ func (sb *SuperBlock) _syncDirties() error {
 			panic("shouldn't happen")
 		}
 		sb._snapshot = sb._snapshotPending
+		binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
+		if ext {
+			os.Remove(sb._filename + ".snapshot")
+		}
 	} else {
 		return newFatal(err)
 	}
@@ -288,16 +312,9 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 		return ErrKeyTooLong
 	}
 
-	fatal := false
 	defer func() {
-		if err != nil && !fatal {
-			if testCase2 {
-				sb.revertDirties()
-			}
-
-			if err != ErrKeyExisted {
-				sb.revertDirties()
-			}
+		if ferr, _ := err.(*Fatal); ferr != nil {
+			sb.revertDirties()
 		}
 	}()
 
@@ -341,7 +358,6 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 SYNC:
 	sb.count++
 	if err := sb.syncDirties(); err != nil {
-		fatal = true
 		return err
 	}
 
@@ -405,21 +421,6 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 
 	//	sb._cache.Add(key, node)
 	return load(node)
-}
-
-func (sb *SuperBlock) Commit() error {
-	if sb._flag&LsAsyncCommit == 0 {
-		panic("SuperBlock is not in async state")
-	}
-
-	if sb._flag&LsCritical > 0 {
-		return ErrCriticalState
-	}
-
-	sb._lock.Lock()
-	defer sb._lock.Unlock()
-
-	return sb._syncDirties()
 }
 
 func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {

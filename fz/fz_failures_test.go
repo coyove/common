@@ -13,13 +13,9 @@ func TestFailCase1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.SetFlag(LsAsyncCommit)
 	for i := 0; i < maxItems; i++ {
 		f.Add(strconv.Itoa(i), genReader(int64(i)))
 	}
-	f.Commit()
-
-	f.UnsetFlag(LsAsyncCommit)
 
 	testCase1 = true
 	f.Add("13739", genReader(int64(13739))) // will fail
@@ -88,7 +84,6 @@ func TestFailCase1_2(t *testing.T) {
 }
 
 func TestFailCase2(t *testing.T) {
-	testCase2 = true
 
 	f, err := Open("map", nil)
 	if f == nil {
@@ -99,18 +94,36 @@ func TestFailCase2(t *testing.T) {
 		f.Add(strconv.Itoa(i), genReader(int64(i)))
 	}
 
-	f.SetFlag(LsAsyncCommit)
+	testCase2 = true
 	f.Add(strconv.Itoa(maxItems), genReader(0))
-	f.Add(strconv.Itoa(maxItems-1), genReader(0)) // fail
+	testCase2 = false
 
-	if f.Count() != maxItems || f.Size() != maxItems*8 {
-		t.Error("Count() or Size() failed")
+	f.Close()
+
+	if _, err := Open("map", nil); err != ErrInvalidSnapshot {
+		t.Fatal(err)
+	}
+
+	f, err = Open("map", &Options{
+		IgnoreSnapshot: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Count() != maxItems {
+		t.Error("Count() failed")
+	}
+
+	for i := 0; i < maxItems; i++ {
+		v, _ := f.Get(strconv.Itoa(i))
+		if i != int(binary.BigEndian.Uint64(v.ReadAllAndClose())) {
+			t.Error(i)
+		}
 	}
 
 	f.Close()
 	os.Remove("map")
 
-	testCase2 = false
 }
 
 func TestFailCase3(t *testing.T) {
@@ -120,46 +133,45 @@ func TestFailCase3(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.SetFlag(LsAsyncCommit)
-	m := map[int]bool{COUNT: true}
+	m := map[int]bool{}
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i), genReader(int64(i)))
 		m[i] = true
 	}
-	f.Commit()
-	f.UnsetFlag(LsAsyncCommit)
 
-	f.Add(strconv.Itoa(COUNT), genReader(int64(COUNT)))
 	testCase3 = true
-	fatal := f.Add("case3", genReader(0)).(*Fatal)
+	f.Add("case3", genReader(0))
 	testCase3 = false
 
 	f.Close()
 
-	Recover("map", fatal.Snapshot)
-
-	f, err = Open("map", nil)
-	if f == nil {
-		t.Fatal(err)
-	}
-
-	if f.Count() != COUNT+1 {
-		t.Error("Count() failed")
-	}
-
-	f.Walk(true, func(k string, v *Data) error {
-		if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
-			t.Error(k)
+	for i := 0; i < 2; i++ {
+		f, err = Open("map", nil)
+		if f == nil {
+			t.Fatal(err)
 		}
-		i, _ := strconv.Atoi(k)
-		delete(m, i)
-		return nil
-	})
 
-	if len(m) > 0 {
-		t.Error("There shouldn't be any elements inside")
+		if f.Count() != COUNT+i {
+			t.Error("Count() failed")
+		}
+
+		f.Walk(true, func(k string, v *Data) error {
+			if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
+				t.Error(k)
+			}
+			i, _ := strconv.Atoi(k)
+			delete(m, i)
+			return nil
+		})
+
+		if len(m) > 0 {
+			t.Error("There shouldn't be any elements inside:", m)
+		}
+
+		m[COUNT*2] = true
+		f.Add(strconv.Itoa(COUNT*2), genReader(int(COUNT*2)))
+
+		f.Close()
 	}
-
-	f.Close()
 	os.Remove("map")
 }

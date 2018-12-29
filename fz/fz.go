@@ -1,6 +1,7 @@
 package fz
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash"
 	"hash/fnv"
@@ -36,13 +37,13 @@ var (
 )
 
 const (
-	LsAsyncCommit = 1 << iota
-	LsCritical
+	LsCritical = 1 << iota
 )
 
 type Options struct {
-	MaxFds   int
-	MMapSize int
+	MaxFds         int
+	MMapSize       int
+	IgnoreSnapshot bool
 }
 
 func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
@@ -56,6 +57,12 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 			MMapSize: 1024 * 1024,
 			MaxFds:   4,
 		}
+	}
+	if opt.MaxFds == 0 {
+		opt.MaxFds = 4
+	}
+	if opt.MMapSize == 0 {
+		opt.MMapSize = 1024 * 1024
 	}
 
 	if opt.MMapSize/1024*1024 != opt.MMapSize {
@@ -85,6 +92,14 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		_dirtyNodes: map[*nodeBlock]bool{},
 		_filename:   path,
 	}
+
+	defer func() {
+		if _err != nil && sb._mmap != nil {
+			sb._mmap.Unlock()
+			sb._mmap.Unmap()
+		}
+	}()
+
 	h := fnv.New64()
 
 	if create {
@@ -100,7 +115,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		sb.endian = _endian
 		sb.createdAt = uint32(time.Now().Unix())
 		sb.mmapSize = int32(opt.MMapSize)
-		sb.mmapSizeUsed = int32(superBlockSize)
+		sb.mmapSizeUsed = int32(superBlockSize + snapshotSize)
 		copy(sb.salt[:], r.Fetch(16))
 		if err := sb.sync(); err != nil {
 			return nil, err
@@ -130,6 +145,31 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		return nil, err
 	}
 	sb._mmap.Lock()
+
+	if ln := int(binary.BigEndian.Uint32(sb._mmap[superBlockSize : superBlockSize+4])); ln != 0 {
+		var snapshot []byte
+		if ln > snapshotSize {
+			snapshot, err = ioutil.ReadFile(sb._filename + ".snapshot")
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			snapshot = make([]byte, ln)
+			copy(snapshot, sb._mmap[superBlockSize+4:])
+		}
+
+		if !opt.IgnoreSnapshot {
+			if err := recoverSB(sb, snapshot); err != nil {
+				return nil, err
+			}
+
+			copy((*(*[superBlockSize]byte)(unsafe.Pointer(sb)))[:], sb._mmap[:])
+			os.Remove(sb._filename + ".snapshot")
+		} else {
+			// clear the first 8 bytes of any potential snapshot bytes
+			binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
+		}
+	}
 
 	sb._snapshot = *(*[superBlockSize]byte)(unsafe.Pointer(sb))
 	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
