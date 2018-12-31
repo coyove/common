@@ -28,22 +28,16 @@ var (
 )
 
 var (
-	ErrWrongMagic    = fmt.Errorf("wrong magic code")
-	ErrEndianness    = fmt.Errorf("wrong endianness")
-	ErrKeyNotFound   = fmt.Errorf("key not found")
-	ErrKeyExisted    = fmt.Errorf("key already existed")
-	ErrKeyTooLong    = fmt.Errorf("key too long")
-	ErrCriticalState = fmt.Errorf("critical state")
-)
-
-const (
-	LsCritical = 1 << iota
+	ErrWrongMagic  = fmt.Errorf("wrong magic code")
+	ErrEndianness  = fmt.Errorf("wrong endianness")
+	ErrKeyNotFound = fmt.Errorf("key not found")
+	ErrKeyExisted  = fmt.Errorf("key already existed")
+	ErrKeyTooLong  = fmt.Errorf("key too long")
 )
 
 type Options struct {
-	MaxFds         int
-	MMapSize       int
-	IgnoreSnapshot bool
+	MaxFds   int
+	MMapSize int
 }
 
 func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
@@ -158,16 +152,9 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 			copy(snapshot, sb._mmap[superBlockSize+4:])
 		}
 
-		if !opt.IgnoreSnapshot {
-			if err := recoverSB(sb, snapshot); err != nil {
-				return nil, err
-			}
-
+		if recoverSB(sb, snapshot) {
 			copy((*(*[superBlockSize]byte)(unsafe.Pointer(sb)))[:], sb._mmap[:])
 			os.Remove(sb._filename + ".snapshot")
-		} else {
-			// clear the first 8 bytes of any potential snapshot bytes
-			binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
 		}
 	}
 
@@ -175,7 +162,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	sb._snapshotChPending = map[*nodeBlock][nodeBlockSize]byte{}
 	maxFds := opt.MaxFds
 	sb._cacheFds = make(chan *os.File, maxFds)
-	sb._maxFds = int32(maxFds)
+	sb._maxFds = int16(maxFds)
 
 	for i := 0; i < maxFds; i++ {
 		f, err := os.OpenFile(path, os.O_RDONLY, 0666)

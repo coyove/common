@@ -1,3 +1,5 @@
+// This file was derived from https://github.com/google/btree
+// Below are the original copyright info
 // Copyright 2014 Google Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,40 +13,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-// Package btree implements in-memory B-Trees of arbitrary degree.
-//
-// btree implements an in-memory B-Tree for use as an ordered data structure.
-// It is not meant for persistent storage solutions.
-//
-// It has a flatter structure than an equivalent red-black or other binary tree,
-// which in some cases yields better memory usage and/or performance.
-// See some discussion on the matter here:
-//   http://google-opensource.blogspot.com/2013/01/c-containers-that-save-memory-and-time.html
-// Note, though, that this project is in no way related to the C++ B-Tree
-// implementation written about there.
-//
-// Within this tree, each node contains a slice of items and a (possibly nil)
-// slice of children.  For basic numeric values or raw structs, this can cause
-// efficiency differences when compared to equivalent C++ template code that
-// stores values in arrays within the node:
-//   * Due to the overhead of storing values as interfaces (each
-//     value needs to be stored as the value itself, then 2 words for the
-//     interface pointing to that value and its type), resulting in higher
-//     memory use.
-//   * Since interfaces can point to values anywhere in memory, values are
-//     most likely not stored in contiguous blocks, resulting in a higher
-//     number of cache misses.
-// These issues don't tend to matter, though, when working with strings or other
-// heap-allocated structures, since C++-equivalent structures also must store
-// pointers and also distribute their values across the heap.
-//
-// This implementation is designed to be a drop-in replacement to gollrb.LLRB
-// trees, (http://github.com/petar/gollrb), an excellent and probably the most
-// widely used ordered tree implementation in the Go ecosystem currently.
-// Its functions, therefore, exactly mirror those of
-// llrb.LLRB where possible.  Unlike gollrb, though, we currently don't
-// support storing multiple equivalent values.
 package fz
 
 import (
@@ -75,13 +43,15 @@ type nodeBlock struct {
 }
 
 type pair struct {
-	key    uint128
-	value  int64
-	size   int64
-	tstamp uint32
-	flag   uint32
-	flag2  uint64
-	hash   uint64
+	key      uint128
+	value    int64
+	size     int64
+	tstamp   uint32
+	oct      byte
+	deleted  bool
+	reserved [2]byte
+	flag     uint64
+	hash     uint64
 }
 
 func (s *nodeBlock) markDirty() {
@@ -91,10 +61,7 @@ func (s *nodeBlock) markDirty() {
 // insertAt inserts a value into the given index, pushing all subsequent values
 // forward.
 func (s *nodeBlock) insertItemAt(index int, item pair) {
-	if s.itemsSize >= maxItems {
-		panic("already full")
-	}
-
+	_ = s.items[maxItems-1-s.itemsSize]
 	copy(s.items[index+1:], s.items[index:])
 	s.items[index] = item
 	s.itemsSize++
@@ -117,7 +84,7 @@ func (s *nodeBlock) find(key uint128) (index int, found bool) {
 	i := sort.Search(int(s.itemsSize), func(i int) bool {
 		return key.less(s.items[i].key)
 	})
-	if i > 0 && !(s.items[i-1].key.less(key)) {
+	if i > 0 && s.items[i-1].key == key {
 		return i - 1, true
 	}
 	return i, false
@@ -126,10 +93,7 @@ func (s *nodeBlock) find(key uint128) (index int, found bool) {
 // insertAt inserts a value into the given index, pushing all subsequent values
 // forward.
 func (s *nodeBlock) insertChildAt(index int, n *nodeBlock) {
-	if s.childrenSize >= maxChildren {
-		panic("already full")
-	}
-
+	_ = s._children[maxChildren-1-s.childrenSize]
 	copy(s._children[index+1:], s._children[index:])
 	copy(s.childrenOffset[index+1:], s.childrenOffset[index:])
 	s._children[index] = n
@@ -186,12 +150,11 @@ func (n *nodeBlock) split(i int) (pair, *nodeBlock) {
 // maybeSplitChild checks if a child should be split, and if so splits it.
 // Returns whether or not a split occurred.
 func (n *nodeBlock) maybeSplitChild(i int) bool {
-	ci, _ := n.child(i)
-	if ci == nil || ci.itemsSize < maxItems {
+	ch, _ := n.child(i)
+	if ch == nil || ch.itemsSize < maxItems {
 		return false
 	}
-	first := ci
-	item, second := first.split(maxItems / 2)
+	item, second := ch.split(maxItems / 2)
 	n.insertItemAt(i, item)
 	n.insertChildAt(i+1, second)
 	n.markDirty()
@@ -262,6 +225,8 @@ func (n *nodeBlock) areChildrenSynced() bool {
 	return true
 }
 
+// sync syncs the node to disk, and add it as the pending snapshot
+// if all nodes are synced successfully, then pending snapshots become official snapshots
 func (n *nodeBlock) sync() (err error) {
 	mm := false
 	if n.offset == 0 {
@@ -336,21 +301,28 @@ func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readDat
 			d._super = n._super
 			d._fd = <-n._super._cacheFds
 
-			if _, err := d._fd.Seek(n.items[i].value, 0); err != nil {
+			node := n.items[i]
+			if _, err := d._fd.Seek(node.value, 0); err != nil {
 				return err
 			}
 
-			if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
-				return err
-			}
-			ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
-			keyname = make([]byte, ln)
-			if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
-				return err
+			if node.oct == 9 {
+				if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
+					return err
+				}
+				ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
+				keyname = make([]byte, ln)
+				if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
+					return err
+				}
+			} else {
+				keyname = make([]byte, node.oct)
+				x := node.key[0]
+				copy(keyname, (*(*[8]byte)(unsafe.Pointer(&x)))[:])
 			}
 
 			d.h = fnv.New64()
-			d.pair = n.items[i]
+			d.pair = node
 			d.depth = depth
 			d.index = int(i)
 		} else {

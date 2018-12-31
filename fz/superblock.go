@@ -49,7 +49,8 @@ type SuperBlock struct {
 	_reader     io.Reader
 	_keystr     string
 	_flag       uint32
-	_maxFds     int32
+	_maxFds     int16
+	_closed     bool
 
 	_snapshot          [superBlockSize]byte
 	_snapshotPending   [superBlockSize]byte
@@ -186,7 +187,6 @@ func (sb *SuperBlock) syncDirties() error {
 	// if the belowed code failed, we will be in ciritical state, at that time the whole SuperBlock shall be closed
 
 	newFatal := func(err error) *Fatal {
-		sb.SetFlag(LsCritical)
 		return &Fatal{Err: err}
 	}
 
@@ -256,13 +256,19 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		return pair{}, err
 	}
 
-	var keystrbuf [2]byte
-	binary.BigEndian.PutUint16(keystrbuf[:], uint16(len(sb._keystr)))
-	if _, err := sb._fd.Write(keystrbuf[:]); err != nil {
-		return pair{}, err
-	}
-	if _, err := io.Copy(sb._fd, strings.NewReader(sb._keystr)); err != nil {
-		return pair{}, err
+	var oct byte
+	if len(sb._keystr) > 8 {
+		var keystrbuf [2]byte
+		binary.BigEndian.PutUint16(keystrbuf[:], uint16(len(sb._keystr)))
+		if _, err := sb._fd.Write(keystrbuf[:]); err != nil {
+			return pair{}, err
+		}
+		if _, err := io.Copy(sb._fd, strings.NewReader(sb._keystr)); err != nil {
+			return pair{}, err
+		}
+		oct = 9
+	} else {
+		oct = byte(len(sb._keystr))
 	}
 
 	buf := make([]byte, 32*1024)
@@ -296,7 +302,14 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		return pair{}, err
 	}
 
-	p := pair{key: key, tstamp: uint32(time.Now().Unix()), value: v, size: written, hash: h.Sum64()}
+	p := pair{
+		key:    key,
+		tstamp: uint32(time.Now().Unix()),
+		value:  v,
+		size:   written,
+		hash:   h.Sum64(),
+		oct:    oct,
+	}
 	sb.size += written
 	return p, nil
 }
@@ -305,9 +318,6 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 	sb._lock.Lock()
 	defer sb._lock.Unlock()
 
-	if sb._flag&LsCritical > 0 {
-		return ErrCriticalState
-	}
 	if len(key) >= 65536 {
 		return ErrKeyTooLong
 	}
@@ -320,7 +330,7 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 
 	sb._reader = r
 	sb._keystr = key
-	k := hashString(key)
+	k := sb.hashString(key)
 
 	if sb.rootNode == 0 && sb._root == nil {
 		p, err := sb.writePair(k)
@@ -368,10 +378,6 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
-	if sb._flag&LsCritical > 0 {
-		return nil, ErrCriticalState
-	}
-
 	load := func(node pair) (*Data, error) {
 		d := &Data{}
 		d._fd = <-sb._cacheFds
@@ -381,14 +387,15 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 			return nil, err
 		}
 
-		var keystrbuf [2]byte
-		if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
-			return nil, err
-		}
-		ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
-		keyname := make([]byte, ln)
-		if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
-			return nil, err
+		if node.oct == 9 {
+			var keystrbuf [2]byte
+			if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
+				return nil, err
+			}
+			ln := int64(binary.BigEndian.Uint16(keystrbuf[:]))
+			if _, err := d._fd.Seek(ln, os.SEEK_CUR); err != nil {
+				return nil, err
+			}
 		}
 
 		d.h = fnv.New64()
@@ -400,7 +407,7 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 	//		return load(cached.(pair))
 	//	}
 
-	k := hashString(key)
+	k := sb.hashString(key)
 
 	var err error
 	if sb.rootNode == 0 && sb._root == nil {

@@ -99,14 +99,7 @@ func TestFailCase2(t *testing.T) {
 	testCase2 = false
 
 	f.Close()
-
-	if _, err := Open("map", nil); err != ErrInvalidSnapshot {
-		t.Fatal(err)
-	}
-
-	f, err = Open("map", &Options{
-		IgnoreSnapshot: true,
-	})
+	f, err = Open("map", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/coyove/common/rand"
@@ -73,6 +74,68 @@ func TestOpenFZ(t *testing.T) {
 	}
 
 	f.Close()
+}
+
+func TestOpenFZSmallMMap(t *testing.T) {
+	// 8K mmap, 4K per node, which means only one node can reside in it
+	f, err := Open("map", &Options{MMapSize: 1024 * 8})
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < COUNT; i++ {
+		f.Add(strconv.Itoa(i), genReader(i))
+		fmt.Print("\r", i)
+	}
+	fmt.Print("\r")
+
+	f.Close()
+
+	f, err = Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.Walk(true, func(k string, v *Data) error {
+		if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
+			t.Error(k)
+		}
+		return nil
+	})
+
+	f.Close()
+	os.Remove("map")
+}
+
+func TestOpenFZLongKey(t *testing.T) {
+	// 8K mmap, 4K per node, which means only one node can reside in it
+	f, err := Open("map", &Options{MMapSize: 1024 * 8})
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < COUNT; i++ {
+		f.Add(strconv.Itoa(i)+".12345678", genReader(i))
+		fmt.Print("\r", i)
+	}
+	fmt.Print("\r")
+
+	f.Close()
+
+	f, err = Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.Walk(true, func(k string, v *Data) error {
+		if k[:strings.Index(k, ".")] != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
+			t.Error(k)
+		}
+		return nil
+	})
+
+	f.Close()
+	os.Remove("map")
 }
 
 func TestOpenFZ2(t *testing.T) {

@@ -1,6 +1,10 @@
 package fz
 
-import "strconv"
+import (
+	"hash/fnv"
+	"strconv"
+	"unsafe"
+)
 
 type uint128 [2]uint64
 
@@ -18,10 +22,21 @@ const (
 	prime128Shift   = 24
 )
 
-func hashString(str string) uint128 {
+func (sb *SuperBlock) hashString(str string) uint128 {
+	var z = *(*uint64)(unsafe.Pointer(&sb.salt[0]))
 	var s uint128
+
+	if len(str) <= 8 {
+		h := fnv.New64()
+		h.Write(sb.salt[:8])
+		h.Write(*(*[]byte)(unsafe.Pointer(&str)))
+		copy((*(*[8]byte)(unsafe.Pointer(&s)))[:], str)
+		s[1] = h.Sum64()
+		return s
+	}
+
 	s[0] = offset128Higher
-	s[1] = offset128Lower
+	s[1] = offset128Lower ^ z
 
 	for _, c := range str {
 		s[1] ^= uint64(c)
