@@ -96,7 +96,7 @@ func TestOpenFZSmallMMap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.Walk(true, func(k string, v *Data) error {
+	f.Walk(nil, func(k string, v *Data) error {
 		if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
 			t.Error(k)
 		}
@@ -127,8 +127,40 @@ func TestOpenFZLongKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.Walk(true, func(k string, v *Data) error {
+	f.Walk(nil, func(k string, v *Data) error {
 		if k[:strings.Index(k, ".")] != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
+			t.Error(k)
+		}
+		return nil
+	})
+
+	f.Close()
+	os.Remove("map")
+}
+
+func TestOpenFZFlag(t *testing.T) {
+	f, err := Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < COUNT; i++ {
+		f.Add(strconv.Itoa(i), genReader(i))
+		f.Flag(strconv.Itoa(i), func(uint64) uint64 { return uint64(i) })
+	}
+	f.Close()
+
+	f, err = Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	f.Walk(nil, func(k string, v *Data) error {
+		x := binary.BigEndian.Uint64(v.ReadAllAndClose())
+		if k != strconv.Itoa(int(x)) {
+			t.Error(k)
+		}
+		if v.Flag() != uint64(x) {
 			t.Error(k)
 		}
 		return nil

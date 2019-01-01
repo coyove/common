@@ -17,8 +17,9 @@ import (
 
 var (
 	testCase1 bool // Simulate: error when copying data to disk
-	testCase2 bool // Simulate: rollback if key duplicates
+	testCase2 bool // Simulate: fatal error: sync dirties to disk, incomplete snapshot
 	testCase3 bool // Simulate: fatal error: sync dirties to disk
+	testCase4 bool // Simulate: failed to recover snapshot
 	testError = fmt.Errorf("test")
 )
 
@@ -152,9 +153,14 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 			copy(snapshot, sb._mmap[superBlockSize+4:])
 		}
 
-		if recoverSB(sb, snapshot) {
+		switch x := recoverSB(sb, snapshot); x {
+		case 'S':
 			copy((*(*[superBlockSize]byte)(unsafe.Pointer(sb)))[:], sb._mmap[:])
+			fallthrough
+		case 'I':
 			os.Remove(sb._filename + ".snapshot")
+		case 'E':
+			return nil, ErrSnapshotRecoveryFailed
 		}
 	}
 
@@ -177,7 +183,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 }
 
 type Data struct {
-	pair
+	Metadata
 	_fd     *os.File
 	_closed bool
 	_super  *SuperBlock
@@ -224,11 +230,8 @@ func (d *Data) ReadAllAndClose() []byte {
 	return buf
 }
 
-type Fatal struct {
-	Err      error
-	Snapshot []byte
-}
+func (d *Data) Flag() uint64 { return d.flag }
 
-func (f *Fatal) Error() string {
-	return f.Err.Error()
-}
+func (d *Data) Created() time.Time { return time.Unix(int64(d.tstamp), 0) }
+
+func (d *Data) Hash() uint64 { return d.hash }

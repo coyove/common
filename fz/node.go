@@ -34,7 +34,7 @@ type nodeBlock struct {
 	itemsSize      uint16
 	childrenSize   uint16
 	offset         int64
-	items          [maxItems]pair
+	items          [maxItems]Metadata
 	childrenOffset [maxChildren]int64
 
 	_children [maxChildren]*nodeBlock
@@ -42,14 +42,13 @@ type nodeBlock struct {
 	_snapshot [nodeBlockSize]byte
 }
 
-type pair struct {
+type Metadata struct {
 	key      uint128
-	value    int64
+	offset   int64
 	size     int64
 	tstamp   uint32
 	oct      byte
-	deleted  bool
-	reserved [2]byte
+	reserved [3]byte
 	flag     uint64
 	hash     uint64
 }
@@ -60,7 +59,7 @@ func (s *nodeBlock) markDirty() {
 
 // insertAt inserts a value into the given index, pushing all subsequent values
 // forward.
-func (s *nodeBlock) insertItemAt(index int, item pair) {
+func (s *nodeBlock) insertItemAt(index int, item Metadata) {
 	_ = s.items[maxItems-1-s.itemsSize]
 	copy(s.items[index+1:], s.items[index:])
 	s.items[index] = item
@@ -68,9 +67,9 @@ func (s *nodeBlock) insertItemAt(index int, item pair) {
 	s.markDirty()
 }
 
-func (s *nodeBlock) appendItems(pairs ...pair) {
-	copy(s.items[s.itemsSize:], pairs)
-	s.itemsSize += uint16(len(pairs))
+func (s *nodeBlock) appendItems(data ...Metadata) {
+	copy(s.items[s.itemsSize:], data)
+	s.itemsSize += uint16(len(data))
 	if s.itemsSize > maxItems {
 		panic("wtf")
 	}
@@ -133,7 +132,7 @@ func (s *nodeBlock) appendChildrenAndOffsets(nodes []*nodeBlock, offsets []int64
 // split splits the given node at the given index.  The current node shrinks,
 // and this function returns the item that existed at that index and a new node
 // containing all items/children after it.
-func (n *nodeBlock) split(i int) (pair, *nodeBlock) {
+func (n *nodeBlock) split(i int) (Metadata, *nodeBlock) {
 	item := n.items[i]
 	next := n._super.newNode()
 	next.appendItems(n.items[i+1:]...)
@@ -161,9 +160,7 @@ func (n *nodeBlock) maybeSplitChild(i int) bool {
 	return true
 }
 
-// insert inserts an item into the subtree rooted at this node, making sure
-// no nodes in the subtree exceed maxpairs items.  Should an equivalent item be
-// be found/replaced by insert, it will be returned.
+// insert inserts an item into the subtree rooted at this node
 func (n *nodeBlock) insert(key uint128) error {
 	i, found := n.find(key)
 	//log.Println(n.children, n.items, item, i, found)
@@ -172,7 +169,7 @@ func (n *nodeBlock) insert(key uint128) error {
 	}
 
 	if n.childrenSize == 0 {
-		p, err := n._super.writePair(key)
+		p, err := n._super.writeMetadata(key)
 		if err != nil {
 			return err
 		}
@@ -266,28 +263,38 @@ func (n *nodeBlock) revertToLastSnapshot() {
 }
 
 // get finds the given key in the subtree and returns it.
-func (n *nodeBlock) get(key uint128) (pair, error) {
+func (n *nodeBlock) getOrFlag(key uint128, callback func(uint64) uint64) (Metadata, error) {
 	i, found := n.find(key)
 	if found {
-		return n.items[i], nil
+		m := n.items[i]
+		if callback != nil {
+			old := m.flag
+			m.flag = callback(old)
+			n.items[i] = m
+
+			if old != m.flag {
+				n.markDirty()
+			}
+		}
+		return m, nil
 	} else if n.childrenSize > 0 {
 		ch, err := n.child(i)
 		if err != nil {
-			return pair{}, err
+			return Metadata{}, err
 		}
-		return ch.get(key)
+		return ch.getOrFlag(key, callback)
 	}
-	return pair{}, ErrKeyNotFound
+	return Metadata{}, ErrKeyNotFound
 }
 
-func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readData bool, depth int) error {
+func (n *nodeBlock) iterate(filter func(Metadata) bool, callback func(string, *Data) error, depth int) error {
 	for i := uint16(0); i < n.itemsSize; i++ {
 		if n.childrenSize > 0 {
 			ch, err := n.child(int(i))
 			if err != nil {
 				return err
 			}
-			if err := ch.iterate(callback, readData, depth+1); err != nil {
+			if err := ch.iterate(filter, callback, depth+1); err != nil {
 				return err
 			}
 		}
@@ -295,6 +302,11 @@ func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readDat
 		var d *Data
 		var keystrbuf [2]byte
 		var keyname []byte
+		var readData = true
+
+		if filter != nil {
+			readData = filter(n.items[i])
+		}
 
 		if readData {
 			d = &Data{}
@@ -302,7 +314,7 @@ func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readDat
 			d._fd = <-n._super._cacheFds
 
 			node := n.items[i]
-			if _, err := d._fd.Seek(node.value, 0); err != nil {
+			if _, err := d._fd.Seek(node.offset, 0); err != nil {
 				return err
 			}
 
@@ -322,7 +334,7 @@ func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readDat
 			}
 
 			d.h = fnv.New64()
-			d.pair = node
+			d.Metadata = node
 			d.depth = depth
 			d.index = int(i)
 		} else {
@@ -349,7 +361,7 @@ func (n *nodeBlock) iterate(callback func(key string, data *Data) error, readDat
 			return err
 		}
 
-		if err := ch.iterate(callback, readData, depth+1); err != nil {
+		if err := ch.iterate(filter, callback, depth+1); err != nil {
 			return err
 		}
 	}

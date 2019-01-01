@@ -52,6 +52,10 @@ type SuperBlock struct {
 	_maxFds     int16
 	_closed     bool
 
+	// snapshots store the "stable" states of SuperBlock (and nodeBlock)
+	// when dirty nodes are about to sync, new states will go to pending snapshots,
+	// only when all dirty nodes are updated without errors, pending snapshots become stable snapshots
+	// if any error happened, all nodes revert back to last snapshots.
 	_snapshot          [superBlockSize]byte
 	_snapshotPending   [superBlockSize]byte
 	_snapshotChPending map[*nodeBlock][nodeBlockSize]byte
@@ -71,14 +75,6 @@ func (b *SuperBlock) addDirtyNode(n *nodeBlock) {
 func (b *SuperBlock) revertToLastSnapshot() {
 	*(*[superBlockSize]byte)(unsafe.Pointer(b)) = b._snapshot
 	b._root = nil
-}
-
-func (b *SuperBlock) SetFlag(flag uint32) {
-	b._flag |= flag
-}
-
-func (b *SuperBlock) UnsetFlag(flag uint32) {
-	b._flag &= ^flag
 }
 
 func (b *SuperBlock) sync() error {
@@ -114,6 +110,13 @@ func (b *SuperBlock) Size() int64 {
 }
 
 func (b *SuperBlock) Close() {
+	b._lock.Lock()
+	defer b._lock.Unlock()
+
+	if b._closed {
+		return
+	}
+	b._closed = true
 	b._mmap.Unlock()
 	b._mmap.Unmap()
 	b._fd.Close()
@@ -123,7 +126,7 @@ func (b *SuperBlock) Close() {
 	}
 }
 
-func (sb *SuperBlock) Walk(readData bool, callback func(key string, data *Data) error) error {
+func (sb *SuperBlock) Walk(filter func(Metadata) bool, callback func(key string, data *Data) error) error {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
@@ -139,12 +142,12 @@ func (sb *SuperBlock) Walk(readData bool, callback func(key string, data *Data) 
 		}
 	}
 
-	return sb._root.iterate(callback, readData, 0)
+	return sb._root.iterate(filter, callback, 0)
 }
 
-// syncDirties shall only be called by Add()
+// syncDirties shall only be called by Add()/Flag()
 func (sb *SuperBlock) syncDirties() error {
-	if sb._root == nil {
+	if sb._root == nil || len(sb._dirtyNodes) == 0 {
 		// nothing in the tree
 		return nil
 	}
@@ -169,7 +172,7 @@ func (sb *SuperBlock) syncDirties() error {
 	if testCase2 {
 		// normally we won't have a fatal error here,
 		// let's simulate that copy(sb._mmap[superBlockSize+4:], buf.Bytes()) fails
-		return &Fatal{}
+		panic(testError)
 	}
 
 	if buf.Len() <= snapshotSize {
@@ -184,11 +187,9 @@ func (sb *SuperBlock) syncDirties() error {
 
 	// we have done writing the master snapshot
 	// if the above code failed, we are fine because we will directly revertDirties
-	// if the belowed code failed, we will be in ciritical state, at that time the whole SuperBlock shall be closed
-
-	newFatal := func(err error) *Fatal {
-		return &Fatal{Err: err}
-	}
+	// from now on we are entering the critical area,
+	// if the belowed code failed, we have to panic,
+	// users can recover it, but SuperBlock must not be used anymore.
 
 	nodes := make([]*nodeBlock, 0, len(sb._dirtyNodes))
 	for len(sb._dirtyNodes) > 0 {
@@ -198,7 +199,7 @@ func (sb *SuperBlock) syncDirties() error {
 			}
 
 			if err := node.sync(); err != nil {
-				return newFatal(err)
+				panic(err)
 			}
 
 			nodes = append(nodes, node)
@@ -208,30 +209,33 @@ func (sb *SuperBlock) syncDirties() error {
 
 	sb.rootNode = sb._root.offset
 	var err error
-	if testCase3 {
+	if testCase3 || testCase4 {
 		err = testError
 	} else {
 		err = sb.sync()
 	}
 
-	if err == nil {
-		// all clear, let's commit the pending snapshots
-		for _, node := range nodes {
-			node._snapshot = sb._snapshotChPending[node]
-			delete(sb._snapshotChPending, node)
-		}
-		if len(sb._snapshotChPending) != 0 {
-			panic("shouldn't happen")
-		}
-		sb._snapshot = sb._snapshotPending
-		binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
-		if ext {
-			os.Remove(sb._filename + ".snapshot")
-		}
-	} else {
-		return newFatal(err)
+	if err != nil {
+		panic(err)
 	}
-	return err
+
+	// all clear, let's commit the pending snapshots
+	for _, node := range nodes {
+		node._snapshot = sb._snapshotChPending[node]
+		delete(sb._snapshotChPending, node)
+	}
+
+	// after that the pending snapshots should be emptied
+	if len(sb._snapshotChPending) != 0 {
+		panic("shouldn't happen")
+	}
+	sb._snapshot = sb._snapshotPending
+	binary.BigEndian.PutUint64(sb._mmap[superBlockSize:], 0)
+	if ext {
+		os.Remove(sb._filename + ".snapshot")
+	}
+
+	return nil
 }
 
 func (sb *SuperBlock) revertDirties() {
@@ -242,18 +246,18 @@ func (sb *SuperBlock) revertDirties() {
 	sb.revertToLastSnapshot()
 }
 
-func (sb *SuperBlock) writePair(key uint128) (pair, error) {
+func (sb *SuperBlock) writeMetadata(key uint128) (Metadata, error) {
 	if sb._reader == nil {
 		panic("wtf")
 	}
 
 	if testCase1 {
-		return pair{}, testError
+		return Metadata{}, testError
 	}
 
 	v, err := sb._fd.Seek(0, os.SEEK_END)
 	if err != nil {
-		return pair{}, err
+		return Metadata{}, err
 	}
 
 	var oct byte
@@ -261,10 +265,10 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		var keystrbuf [2]byte
 		binary.BigEndian.PutUint16(keystrbuf[:], uint16(len(sb._keystr)))
 		if _, err := sb._fd.Write(keystrbuf[:]); err != nil {
-			return pair{}, err
+			return Metadata{}, err
 		}
 		if _, err := io.Copy(sb._fd, strings.NewReader(sb._keystr)); err != nil {
-			return pair{}, err
+			return Metadata{}, err
 		}
 		oct = 9
 	} else {
@@ -299,13 +303,13 @@ func (sb *SuperBlock) writePair(key uint128) (pair, error) {
 		}
 	}
 	if err != nil {
-		return pair{}, err
+		return Metadata{}, err
 	}
 
-	p := pair{
+	p := Metadata{
 		key:    key,
 		tstamp: uint32(time.Now().Unix()),
-		value:  v,
+		offset: v,
 		size:   written,
 		hash:   h.Sum64(),
 		oct:    oct,
@@ -323,7 +327,7 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 	}
 
 	defer func() {
-		if ferr, _ := err.(*Fatal); ferr != nil {
+		if err != nil {
 			sb.revertDirties()
 		}
 	}()
@@ -333,7 +337,7 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 	k := sb.hashString(key)
 
 	if sb.rootNode == 0 && sb._root == nil {
-		p, err := sb.writePair(k)
+		p, err := sb.writeMetadata(k)
 		if err != nil {
 			return err
 		}
@@ -378,12 +382,12 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 	sb._lock.RLock()
 	defer sb._lock.RUnlock()
 
-	load := func(node pair) (*Data, error) {
+	load := func(node Metadata) (*Data, error) {
 		d := &Data{}
 		d._fd = <-sb._cacheFds
 		d._super = sb
 
-		if _, err := d._fd.Seek(node.value, 0); err != nil {
+		if _, err := d._fd.Seek(node.offset, 0); err != nil {
 			return nil, err
 		}
 
@@ -399,12 +403,12 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 		}
 
 		d.h = fnv.New64()
-		d.pair = node
+		d.Metadata = node
 		return d, nil
 	}
 
 	//	if cached, ok := sb._cache.Get(key); ok {
-	//		return load(cached.(pair))
+	//		return load(cached.(Metadata))
 	//	}
 
 	k := sb.hashString(key)
@@ -421,13 +425,43 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 		}
 	}
 
-	node, err := sb._root.get(k)
+	node, err := sb._root.getOrFlag(k, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	//	sb._cache.Add(key, node)
 	return load(node)
+}
+
+func (sb *SuperBlock) Flag(key string, callback func(uint64) uint64) (uint64, error) {
+	sb._lock.Lock()
+	defer sb._lock.Unlock()
+
+	k := sb.hashString(key)
+
+	var err error
+	if sb.rootNode == 0 && sb._root == nil {
+		return 0, ErrKeyNotFound
+	}
+
+	if sb.rootNode != 0 && sb._root == nil {
+		sb._root, err = sb.loadNodeBlock(sb.rootNode)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	node, err := sb._root.getOrFlag(k, callback)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := sb.syncDirties(); err != nil {
+		return 0, err
+	}
+
+	return node.flag, nil
 }
 
 func (sb *SuperBlock) loadNodeBlock(offset int64) (*nodeBlock, error) {
