@@ -59,6 +59,9 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	if opt.MMapSize == 0 {
 		opt.MMapSize = 1024 * 1024
 	}
+	if opt.MMapSize >= 1024*1024*1024*2 {
+		return nil, fmt.Errorf("mmap size can't exceed 2 GiB")
+	}
 
 	if opt.MMapSize/1024*1024 != opt.MMapSize {
 		return nil, fmt.Errorf("mmap size should be multiple of 1024")

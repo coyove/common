@@ -223,11 +223,10 @@ func (n *nodeBlock) areChildrenSynced() bool {
 }
 
 // sync syncs the node to disk, and add it as the pending snapshot
-// if all nodes are synced successfully, then pending snapshots become official snapshots
 func (n *nodeBlock) sync() (err error) {
 	mm := false
 	if n.offset == 0 {
-		if n._super.mmapSizeUsed+nodeBlockSize < n._super.mmapSize {
+		if n._super.mmapSizeUsed+nodeBlockSize <= n._super.mmapSize {
 			n.offset = int64(n._super.mmapSizeUsed)
 			n._super.mmapSizeUsed += nodeBlockSize
 			mm = true

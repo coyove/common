@@ -40,8 +40,7 @@ func genReader(r interface{}) io.Reader {
 var marker = []byte{1, 2, 3, 4, 5, 6, 7, 8}
 
 func TestOpenFZ(t *testing.T) {
-	os.Remove("test")
-	f, err := Open("test", nil)
+	f, err := Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -56,7 +55,7 @@ func TestOpenFZ(t *testing.T) {
 	f.Add("13739", genReader(marker))
 	f.Close()
 
-	f, err = Open("test", nil)
+	f, err = Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -74,11 +73,12 @@ func TestOpenFZ(t *testing.T) {
 	}
 
 	f.Close()
+	os.Remove("map")
 }
 
 func TestOpenFZSmallMMap(t *testing.T) {
-	// 8K mmap, 4K per node, which means only one node can reside in it
-	f, err := Open("map", &Options{MMapSize: 1024 * 8})
+	// 40K mmap, 32K node buffer, 4K per node, which means only one node can reside in it
+	f, err := Open("map", &Options{MMapSize: 1024 * 40})
 	if f == nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,9 @@ func TestOpenFZSmallMMap(t *testing.T) {
 	}
 
 	f.Walk(nil, func(k string, v *Data) error {
-		if k != strconv.Itoa(int(binary.BigEndian.Uint64(v.ReadAllAndClose()))) {
-			t.Error(k)
+		num := int(binary.BigEndian.Uint64(v.ReadAllAndClose()))
+		if k != strconv.Itoa(num) {
+			t.Error(k, num)
 		}
 		return nil
 	})
@@ -255,7 +256,7 @@ func BenchmarkFZ(b *testing.B) {
 
 	r := rand.New()
 	for i := 0; i < b.N; i++ {
-		v, _ := f.Get(strconv.Itoa(r.Intn(COUNT)))
+		v, _ := f.Get(strconv.Itoa(r.Intn(COUNT)) + "12345678")
 		if v != nil {
 			v.ReadAllAndClose()
 		}
@@ -296,7 +297,7 @@ func TestMain(m *testing.M) {
 
 	//r := rand.New()
 	for i := 0; i < COUNT; i++ {
-		f.Add(strconv.Itoa(i), genReader(string(rbuf)))
+		f.Add(strconv.Itoa(i)+"12345678", genReader(string(rbuf)))
 		fmt.Print("\rFZ:", i)
 	}
 	fmt.Print("\r")
