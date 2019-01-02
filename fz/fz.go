@@ -49,7 +49,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 
 	if opt == nil {
 		opt = &Options{
-			MMapSize: 1024 * 1024,
+			MMapSize: 1024 * 64,
 			MaxFds:   4,
 		}
 	}
@@ -57,14 +57,14 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		opt.MaxFds = 4
 	}
 	if opt.MMapSize == 0 {
-		opt.MMapSize = 1024 * 1024
+		opt.MMapSize = 1024 * 64
 	}
 	if opt.MMapSize >= 1024*1024*1024*2 {
 		return nil, fmt.Errorf("mmap size can't exceed 2 GiB")
 	}
 
-	if opt.MMapSize/1024*1024 != opt.MMapSize {
-		return nil, fmt.Errorf("mmap size should be multiple of 1024")
+	if opt.MMapSize/4096*4096 != opt.MMapSize {
+		return nil, fmt.Errorf("mmap size should be multiple of 4096")
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
@@ -142,7 +142,9 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	if err != nil {
 		return nil, err
 	}
-	sb._mmap.Lock()
+	if err := sb._mmap.Lock(); err != nil {
+		return nil, err
+	}
 
 	if ln := int(binary.BigEndian.Uint32(sb._mmap[superBlockSize : superBlockSize+4])); ln != 0 {
 		var snapshot []byte
