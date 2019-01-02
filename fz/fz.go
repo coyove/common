@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -16,11 +17,12 @@ import (
 )
 
 var (
-	testCase1 bool // Simulate: error when copying data to disk
-	testCase2 bool // Simulate: fatal error: sync dirties to disk, incomplete snapshot
-	testCase3 bool // Simulate: fatal error: sync dirties to disk
-	testCase4 bool // Simulate: failed to recover snapshot
-	testError = fmt.Errorf("test")
+	testSetMem func()
+	testCase1  bool // Simulate: error when copying data to disk
+	testCase2  bool // Simulate: fatal error: sync dirties to disk, incomplete snapshot
+	testCase3  bool // Simulate: fatal error: sync dirties to disk
+	testCase4  bool // Simulate: failed to recover snapshot
+	testError  = fmt.Errorf("test")
 )
 
 var (
@@ -29,16 +31,27 @@ var (
 )
 
 var (
-	ErrWrongMagic  = fmt.Errorf("wrong magic code")
-	ErrEndianness  = fmt.Errorf("wrong endianness")
-	ErrKeyNotFound = fmt.Errorf("key not found")
-	ErrKeyExisted  = fmt.Errorf("key already existed")
-	ErrKeyTooLong  = fmt.Errorf("key too long")
+	defaultMMapSize = 1024 * 1024 * 4
+)
+
+var (
+	ErrWrongMagic   = fmt.Errorf("wrong magic code")
+	ErrEndianness   = fmt.Errorf("wrong endianness")
+	ErrKeyNotFound  = fmt.Errorf("key not found")
+	ErrKeyExisted   = fmt.Errorf("key already existed")
+	ErrKeyTooLong   = fmt.Errorf("key too long")
+	ErrKeyNilReader = fmt.Errorf("nil reader")
 )
 
 type Options struct {
 	MaxFds   int
 	MMapSize int
+}
+
+func init() {
+	if runtime.GOOS == "windows" {
+		//defaultMMapSize = 1024 * 64
+	}
 }
 
 func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
@@ -49,7 +62,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 
 	if opt == nil {
 		opt = &Options{
-			MMapSize: 1024 * 64,
+			MMapSize: defaultMMapSize,
 			MaxFds:   4,
 		}
 	}
@@ -57,7 +70,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		opt.MaxFds = 4
 	}
 	if opt.MMapSize == 0 {
-		opt.MMapSize = 1024 * 64
+		opt.MMapSize = defaultMMapSize
 	}
 	if opt.MMapSize >= 1024*1024*1024*2 {
 		return nil, fmt.Errorf("mmap size can't exceed 2 GiB")

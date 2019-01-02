@@ -52,7 +52,7 @@ func TestOpenFZ(t *testing.T) {
 	}
 	fmt.Print("\r")
 
-	f.Add("13739", genReader(marker))
+	f.Add("137393731", genReader(marker))
 	f.Close()
 
 	f, err = Open("map", nil)
@@ -60,7 +60,7 @@ func TestOpenFZ(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	v, _ := f.Get("13739")
+	v, _ := f.Get("137393731")
 	buf := v.ReadAllAndClose()
 	if !bytes.Equal(buf, marker) {
 		t.Error(buf)
@@ -278,6 +278,10 @@ func BenchmarkFile(b *testing.B) {
 }
 
 func TestMain(m *testing.M) {
+	if testSetMem != nil {
+		testSetMem()
+	}
+
 	os.RemoveAll("test2")
 	os.Remove("test")
 	os.Remove("map")

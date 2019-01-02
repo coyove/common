@@ -109,21 +109,30 @@ func (b *SuperBlock) Size() int64 {
 	return b.size
 }
 
-func (b *SuperBlock) Close() {
+func (b *SuperBlock) Close() error {
 	b._lock.Lock()
 	defer b._lock.Unlock()
 
 	if b._closed {
-		return
+		return nil
 	}
 	b._closed = true
-	b._mmap.Unlock()
-	b._mmap.Unmap()
-	b._fd.Close()
+	if err := b._mmap.Unlock(); err != nil {
+		return err
+	}
+	if err := b._mmap.Unmap(); err != nil {
+		return err
+	}
+	if err := b._fd.Close(); err != nil {
+		return err
+	}
 	for i := 0; i < int(b._maxFds); i++ {
 		f := <-b._cacheFds
-		f.Close()
+		if err := f.Close(); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (sb *SuperBlock) Walk(filter func(Metadata) bool, callback func(key string, data *Data) error) error {
@@ -324,6 +333,9 @@ func (sb *SuperBlock) Add(key string, r io.Reader) (err error) {
 
 	if len(key) >= 65536 {
 		return ErrKeyTooLong
+	}
+	if r == nil {
+		return ErrKeyNilReader
 	}
 
 	defer func() {
