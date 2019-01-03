@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coyove/common/rand"
 )
@@ -286,25 +287,28 @@ func TestMain(m *testing.M) {
 	os.Remove("test")
 	os.Remove("map")
 
+	start := time.Now()
 	os.Mkdir("test2", 0777)
 	rbuf := make([]byte, 8)
 	for i := 0; i < COUNT; i++ {
 		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
-		fmt.Print("\rOS:", i)
+		fmt.Print("\rNative:", i)
 	}
-	fmt.Print("\r        ")
+	fmt.Print("\r")
+	fmt.Println("Native in", time.Now().Sub(start).Seconds(), "s")
 
 	f, err := Open("test", nil)
 	if err != nil {
 		panic(err)
 	}
 
-	//r := rand.New()
+	start = time.Now()
 	for i := 0; i < COUNT; i++ {
 		f.Add(strconv.Itoa(i)+"12345678", genReader(string(rbuf)))
 		fmt.Print("\rFZ:", i)
 	}
 	fmt.Print("\r")
+	fmt.Println("FZ in", time.Now().Sub(start).Seconds(), "s")
 
 	f.Close()
 

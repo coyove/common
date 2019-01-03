@@ -30,6 +30,21 @@ var (
 	_endian byte   = *(*byte)(unsafe.Pointer(&_one))
 )
 
+type _padding struct {
+	a byte
+	b [11]byte
+	c uint32
+	d uint64
+}
+
+func init() {
+	var p [2]_padding
+	var p0, p1 = uintptr(unsafe.Pointer(&p[0])), uintptr(unsafe.Pointer(&p[1]))
+	if p1-p0 != 24 {
+		panic("golang changed struct padding, again")
+	}
+}
+
 var (
 	defaultMMapSize = 1024 * 1024 * 4
 )
@@ -202,32 +217,33 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 
 type Data struct {
 	Metadata
-	_fd     *os.File
-	_closed bool
-	_super  *SuperBlock
-	h       hash.Hash64
-	depth   int
-	index   int
+	_fd       *os.File
+	_closed   bool
+	_super    *SuperBlock
+	h         hash.Hash32
+	depth     int
+	index     int
+	remaining int
 }
 
 func (d *Data) Read(p []byte) (int, error) {
-	if d.size <= 0 {
+	if d.remaining <= 0 {
 		return 0, io.EOF
 	}
 
 	n, err := d._fd.Read(p)
 
-	if int64(n) > d.size {
-		n = int(d.size)
-		d.size = 0
+	if n > d.remaining {
+		n = d.remaining
+		d.remaining = 0
 	} else {
-		d.size -= int64(n)
+		d.remaining -= n
 	}
 
 	d.h.Write(p[:n])
-	if d.size == 0 {
-		if d.hash != d.h.Sum64() {
-			return 0, fmt.Errorf("invalid hash: %x, expect: %x", d.h.Sum64(), d.hash)
+	if d.remaining == 0 {
+		if d.crc32 != d.h.Sum32() {
+			return 0, fmt.Errorf("invalid hash: %x, expect: %x", d.h.Sum32(), d.crc32)
 		}
 	}
 
@@ -247,9 +263,3 @@ func (d *Data) ReadAllAndClose() []byte {
 	d.Close()
 	return buf
 }
-
-func (d *Data) Flag() uint64 { return d.flag }
-
-func (d *Data) Created() time.Time { return time.Unix(int64(d.tstamp), 0) }
-
-func (d *Data) Hash() uint64 { return d.hash }

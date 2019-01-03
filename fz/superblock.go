@@ -3,6 +3,7 @@ package fz
 import (
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"hash/fnv"
 	"io"
 	"io/ioutil"
@@ -18,7 +19,6 @@ import (
 var superBlockMagic = [4]byte{'z', 'z', 'z', '0'}
 
 const (
-	itemSize       = 56
 	superBlockSize = 72
 	nodeBlockSize  = 16 + maxItems*itemSize + maxChildren*8
 
@@ -269,24 +269,16 @@ func (sb *SuperBlock) writeMetadata(key uint128) (Metadata, error) {
 		return Metadata{}, err
 	}
 
-	var oct byte
-	if len(sb._keystr) > 8 {
-		var keystrbuf [2]byte
-		binary.BigEndian.PutUint16(keystrbuf[:], uint16(len(sb._keystr)))
-		if _, err := sb._fd.Write(keystrbuf[:]); err != nil {
-			return Metadata{}, err
-		}
+	var keylen uint16 = uint16(len(sb._keystr))
+	if keylen > 8 {
 		if _, err := io.Copy(sb._fd, strings.NewReader(sb._keystr)); err != nil {
 			return Metadata{}, err
 		}
-		oct = 9
-	} else {
-		oct = byte(len(sb._keystr))
 	}
 
 	buf := make([]byte, 32*1024)
 	written := int64(0)
-	h := fnv.New64()
+	h := crc32.NewIEEE()
 	for {
 		nr, er := sb._reader.Read(buf)
 		if nr > 0 {
@@ -319,10 +311,12 @@ func (sb *SuperBlock) writeMetadata(key uint128) (Metadata, error) {
 		key:    key,
 		tstamp: uint32(time.Now().Unix()),
 		offset: v,
-		size:   written,
-		hash:   h.Sum64(),
-		oct:    oct,
+		crc32:  h.Sum32(),
 	}
+
+	p.setKeyLen(keylen)
+	p.setBufLen(written)
+
 	sb.size += written
 	return p, nil
 }
@@ -403,19 +397,16 @@ func (sb *SuperBlock) Get(key string) (*Data, error) {
 			return nil, err
 		}
 
-		if node.oct == 9 {
-			var keystrbuf [2]byte
-			if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
-				return nil, err
-			}
-			ln := int64(binary.BigEndian.Uint16(keystrbuf[:]))
+		if node.KeyLen() > 8 {
+			ln := int64(node.KeyLen())
 			if _, err := d._fd.Seek(ln, os.SEEK_CUR); err != nil {
 				return nil, err
 			}
 		}
 
-		d.h = fnv.New64()
+		d.h = crc32.NewIEEE()
 		d.Metadata = node
+		d.remaining = int(node.BufLen())
 		return d, nil
 	}
 

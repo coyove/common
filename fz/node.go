@@ -16,8 +16,7 @@
 package fz
 
 import (
-	"encoding/binary"
-	"hash/fnv"
+	"hash/crc32"
 	"io"
 	"os"
 	"sort"
@@ -40,17 +39,6 @@ type nodeBlock struct {
 	_children [maxChildren]*nodeBlock
 	_super    *SuperBlock
 	_snapshot [nodeBlockSize]byte
-}
-
-type Metadata struct {
-	key      uint128
-	offset   int64
-	size     int64
-	tstamp   uint32
-	oct      byte
-	reserved [3]byte
-	flag     uint64
-	hash     uint64
 }
 
 func (s *nodeBlock) markDirty() {
@@ -299,7 +287,6 @@ func (n *nodeBlock) iterate(filter func(Metadata) bool, callback func(string, *D
 		}
 
 		var d *Data
-		var keystrbuf [2]byte
 		var keyname []byte
 		var readData = true
 
@@ -307,45 +294,35 @@ func (n *nodeBlock) iterate(filter func(Metadata) bool, callback func(string, *D
 			readData = filter(n.items[i])
 		}
 
-		if readData {
-			d = &Data{}
-			d._super = n._super
-			d._fd = <-n._super._cacheFds
-
-			node := n.items[i]
-			if _, err := d._fd.Seek(node.offset, 0); err != nil {
-				return err
-			}
-
-			if node.oct == 9 {
-				if _, err := io.ReadAtLeast(d._fd, keystrbuf[:], 2); err != nil {
-					return err
-				}
-				ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
-				keyname = make([]byte, ln)
-				if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
-					return err
-				}
-			} else {
-				keyname = make([]byte, node.oct)
-				x := node.key[0]
-				copy(keyname, (*(*[8]byte)(unsafe.Pointer(&x)))[:])
-			}
-
-			d.h = fnv.New64()
-			d.Metadata = node
-			d.depth = depth
-			d.index = int(i)
-		} else {
-			if _, err := io.ReadAtLeast(n._super._fd, keystrbuf[:], 2); err != nil {
-				return err
-			}
-			ln := int(binary.BigEndian.Uint16(keystrbuf[:]))
-			keyname = make([]byte, ln)
-			if _, err := io.ReadAtLeast(n._super._fd, keyname, ln); err != nil {
-				return err
-			}
+		if !readData {
+			continue
 		}
+
+		d = &Data{}
+		d._super = n._super
+		d._fd = <-n._super._cacheFds
+
+		node := n.items[i]
+		if _, err := d._fd.Seek(node.offset, 0); err != nil {
+			return err
+		}
+
+		if ln := int(node.KeyLen()); ln > 8 {
+			keyname = make([]byte, ln)
+			if _, err := io.ReadAtLeast(d._fd, keyname, ln); err != nil {
+				return err
+			}
+		} else {
+			keyname = make([]byte, ln)
+			x := node.key[0]
+			copy(keyname, (*(*[8]byte)(unsafe.Pointer(&x)))[:])
+		}
+
+		d.h = crc32.NewIEEE()
+		d.Metadata = node
+		d.depth = depth
+		d.index = int(i)
+		d.remaining = int(node.BufLen())
 
 		callback(string(keyname), d)
 

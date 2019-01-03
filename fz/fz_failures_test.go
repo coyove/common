@@ -2,6 +2,7 @@ package fz
 
 import (
 	"encoding/binary"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"testing"
@@ -40,6 +41,7 @@ func TestFailCase1(t *testing.T) {
 	f.Close()
 	os.Remove("map")
 
+	// case 2: fail on an empty file
 	f, err = Open("map", nil)
 	if f == nil {
 		t.Fatal(err)
@@ -219,4 +221,35 @@ func TestFailCase4(t *testing.T) {
 
 	os.Remove("map")
 
+}
+
+func TestFailCaseCorruptedFile(t *testing.T) {
+	f, err := Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 256; i++ {
+		f.Add(strconv.Itoa(i), genReader(int64(i)))
+	}
+	f.Close()
+
+	raw, _ := os.OpenFile("map", os.O_RDWR, 0666)
+	raw.Seek(-8, os.SEEK_END)
+	raw.Write([]byte{99})
+	raw.Close()
+
+	f, err = Open("map", nil)
+	if f == nil {
+		t.Fatal(err)
+	}
+
+	x, _ := f.Get("255")
+	_, err = ioutil.ReadAll(x)
+	if err == nil {
+		t.Fatal("data should be corrupted")
+	}
+	x.Close()
+
+	f.Close()
+	os.Remove("map")
 }
