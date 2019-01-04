@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boltdb/bolt"
 	"github.com/coyove/common/rand"
 )
 
@@ -266,14 +267,27 @@ func BenchmarkFZ(b *testing.B) {
 	f.Close()
 }
 
-func BenchmarkFile(b *testing.B) {
+func BenchmarkBolt(b *testing.B) {
+	db, _ := bolt.Open("bolt", 0666, nil)
+	r := rand.New()
+	for i := 0; i < b.N; i++ {
+		db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("main"))
+			b.Get([]byte(strconv.Itoa(r.Intn(COUNT)) + "12345678"))
+			return nil
+		})
+	}
 
+	db.Close()
+}
+
+func BenchmarkNative(b *testing.B) {
 	r := rand.New()
 	for i := 0; i < b.N; i++ {
 		f, _ := os.Open("test2/" + strconv.Itoa(r.Intn(COUNT)))
-		buf := make([]byte, 8)
-		f.Seek(0, 0)
-		io.ReadAtLeast(f, buf, 8)
+		fi, _ := f.Stat()
+		buf := make([]byte, fi.Size())
+		io.ReadAtLeast(f, buf, int(fi.Size()))
 		f.Close()
 	}
 }
@@ -286,10 +300,11 @@ func TestMain(m *testing.M) {
 	os.RemoveAll("test2")
 	os.Remove("test")
 	os.Remove("map")
+	os.Remove("bolt")
 
 	start := time.Now()
 	os.Mkdir("test2", 0777)
-	rbuf := make([]byte, 8)
+	rbuf := make([]byte, 8192)
 	for i := 0; i < COUNT; i++ {
 		ioutil.WriteFile("test2/"+strconv.Itoa(i), rbuf, 0666)
 		fmt.Print("\rNative:", i)
@@ -304,11 +319,25 @@ func TestMain(m *testing.M) {
 
 	start = time.Now()
 	for i := 0; i < COUNT; i++ {
-		f.Add(strconv.Itoa(i)+"12345678", genReader(string(rbuf)))
+		f.Add(strconv.Itoa(i)+"12345678", genReader(rbuf))
 		fmt.Print("\rFZ:", i)
 	}
 	fmt.Print("\r")
 	fmt.Println("FZ in", time.Now().Sub(start).Seconds(), "s")
+
+	start = time.Now()
+	db, _ := bolt.Open("bolt", 0666, nil)
+	for i := 0; i < COUNT; i++ {
+		db.Update(func(tx *bolt.Tx) error {
+			b, _ := tx.CreateBucketIfNotExists([]byte("main"))
+			b.Put([]byte(strconv.Itoa(i)+"12345678"), rbuf)
+			fmt.Print("\rBolt:", i)
+			return nil
+		})
+	}
+	db.Close()
+	fmt.Print("\r")
+	fmt.Println("Bolt in", time.Now().Sub(start).Seconds(), "s")
 
 	f.Close()
 
@@ -316,5 +345,6 @@ func TestMain(m *testing.M) {
 
 	os.RemoveAll("test2")
 	os.Remove("test")
+	os.Remove("bolt")
 	os.Exit(code)
 }
