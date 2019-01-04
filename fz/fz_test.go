@@ -312,7 +312,7 @@ func TestMain(m *testing.M) {
 	fmt.Print("\r")
 	fmt.Println("Native in", time.Now().Sub(start).Seconds(), "s")
 
-	f, err := Open("test", nil)
+	f, err := Open("test", &Options{ForceCreate: true})
 	if err != nil {
 		panic(err)
 	}

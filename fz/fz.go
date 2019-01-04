@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"runtime"
 	"time"
 	"unsafe"
 
@@ -47,6 +46,7 @@ func init() {
 
 var (
 	defaultMMapSize = 1024 * 1024 * 4
+	defaultInitSize = 1024 * 1024 * 4
 )
 
 var (
@@ -59,14 +59,10 @@ var (
 )
 
 type Options struct {
-	MaxFds   int
-	MMapSize int
-}
-
-func init() {
-	if runtime.GOOS == "windows" {
-		//defaultMMapSize = 1024 * 64
-	}
+	MaxFds      int
+	MMapSize    int
+	InitSize    int
+	ForceCreate bool
 }
 
 func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
@@ -78,6 +74,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	if opt == nil {
 		opt = &Options{
 			MMapSize: defaultMMapSize,
+			InitSize: defaultInitSize,
 			MaxFds:   4,
 		}
 	}
@@ -87,12 +84,20 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	if opt.MMapSize == 0 {
 		opt.MMapSize = defaultMMapSize
 	}
+	if opt.InitSize == 0 {
+		opt.InitSize = defaultInitSize
+	}
 	if opt.MMapSize >= 1024*1024*1024*2 {
 		return nil, fmt.Errorf("mmap size can't exceed 2 GiB")
 	}
-
-	if opt.MMapSize/4096*4096 != opt.MMapSize {
-		return nil, fmt.Errorf("mmap size should be multiple of 4096")
+	if opt.MMapSize/4096*4096 != opt.MMapSize || opt.InitSize/4096*4096 != opt.InitSize {
+		return nil, fmt.Errorf("mmap/init size should be multiple of 4096")
+	}
+	if opt.MMapSize > opt.InitSize {
+		return nil, fmt.Errorf("mmap size should be smaller than init size")
+	}
+	if opt.ForceCreate {
+		create = true
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
@@ -129,8 +134,8 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 	h := fnv.New64()
 
 	if create {
-		var payload [1024]byte
-		for i := 0; i < opt.MMapSize; i += 1024 {
+		var payload [4096]byte
+		for i := 0; i < opt.InitSize; i += 4096 {
 			if _, err := sb._fd.Write(payload[:]); err != nil {
 				return nil, err
 			}
@@ -142,6 +147,7 @@ func Open(path string, opt *Options) (_sb *SuperBlock, _err error) {
 		sb.createdAt = uint32(time.Now().Unix())
 		sb.mmapSize = int32(opt.MMapSize)
 		sb.mmapSizeUsed = int32(superBlockSize + snapshotSize)
+		sb.tailptr = int64(opt.MMapSize)
 		copy(sb.salt[:], r.Fetch(16))
 		if err := sb.sync(); err != nil {
 			return nil, err

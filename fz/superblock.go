@@ -19,7 +19,7 @@ import (
 var superBlockMagic = [4]byte{'z', 'z', 'z', '0'}
 
 const (
-	superBlockSize = 72
+	superBlockSize = 80
 	nodeBlockSize  = 16 + maxItems*itemSize + maxChildren*8
 
 	// normally an insert op won't affect more than 8 nodes, if it does, we have to save snapshot to an external file
@@ -35,6 +35,7 @@ type SuperBlock struct {
 	createdAt    uint32
 	size         int64
 	count        uint64
+	tailptr      int64
 	salt         [16]byte
 	rootNode     int64
 	superHash    uint64
@@ -264,7 +265,7 @@ func (sb *SuperBlock) writeMetadata(key uint128) (Metadata, error) {
 		return Metadata{}, testError
 	}
 
-	v, err := sb._fd.Seek(0, os.SEEK_END)
+	v, err := sb._fd.Seek(sb.tailptr, os.SEEK_SET)
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -318,6 +319,10 @@ func (sb *SuperBlock) writeMetadata(key uint128) (Metadata, error) {
 	p.setBufLen(written)
 
 	sb.size += written
+	sb.tailptr += written
+	if keylen > 8 {
+		sb.tailptr += int64(keylen)
+	}
 	return p, nil
 }
 
