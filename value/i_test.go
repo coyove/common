@@ -1,6 +1,7 @@
 package value
 
 import (
+	"bytes"
 	"math/rand"
 	"strconv"
 	"testing"
@@ -28,4 +29,18 @@ func TestValues(t *testing.T) {
 			t.Fatal(vs, ii)
 		}
 	}
+}
+
+func TestConnection(t *testing.T) {
+	if (foo().String()) != "abcdefghij" {
+		t.FailNow()
+	}
+}
+
+func foo() Value {
+	p := bytes.Buffer{}
+	for i := 0; i < 10; i++ {
+		p.WriteRune(rune(i) + 'a')
+	}
+	return String(p.String())
 }

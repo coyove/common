@@ -70,11 +70,7 @@ func (v Value) Float64B() (float64, bool) {
 }
 
 func String(s string) Value {
-	r := *(*reflect.StringHeader)(unsafe.Pointer(&s))
-	v := Value{}
-	v.p = unsafe.Pointer(r.Data)
-	v.a = uint64(typeString)<<62 | uint64(r.Len)
-	return v
+	return Value{a: uint64(typeString) << 62, p: unsafe.Pointer(&s)}
 }
 
 func (v Value) IsString() bool {
@@ -82,13 +78,10 @@ func (v Value) IsString() bool {
 }
 
 func (v Value) StringB() (string, bool) {
-	if valueType(v.a>>62) != typeString {
-		return "", false
+	if valueType(v.a>>62) == typeString {
+		return *(*string)(v.p), true
 	}
-	r := reflect.StringHeader{}
-	r.Data = uintptr(v.p)
-	r.Len = int(v.a << 2 >> 2)
-	return *(*string)(unsafe.Pointer(&r)), true
+	return "", false
 }
 
 func (v Value) String() string {
