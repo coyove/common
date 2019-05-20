@@ -45,7 +45,11 @@ func (v Value) IsInt64() bool {
 	return v.p == typeXInt
 }
 
-func (v Value) Int64() (int64, bool) {
+func (v Value) Int64() int64 {
+	return int64(v.a)
+}
+
+func (v Value) Int64B() (int64, bool) {
 	return int64(v.a), v.p == typeXInt
 }
 
@@ -57,7 +61,11 @@ func (v Value) IsFloat64() bool {
 	return v.p == typeXFloat
 }
 
-func (v Value) Float64() (float64, bool) {
+func (v Value) Float64() float64 {
+	return math.Float64frombits(v.a)
+}
+
+func (v Value) Float64B() (float64, bool) {
 	return math.Float64frombits(v.a), v.p == typeXFloat
 }
 
@@ -73,7 +81,7 @@ func (v Value) IsString() bool {
 	return valueType(v.a>>62) == typeString
 }
 
-func (v Value) String() (string, bool) {
+func (v Value) StringB() (string, bool) {
 	if valueType(v.a>>62) != typeString {
 		return "", false
 	}
@@ -81,6 +89,11 @@ func (v Value) String() (string, bool) {
 	r.Data = uintptr(v.p)
 	r.Len = int(v.a << 2 >> 2)
 	return *(*string)(unsafe.Pointer(&r)), true
+}
+
+func (v Value) String() string {
+	s, _ := v.StringB()
+	return s
 }
 
 func Bytes(p []byte) Value {
@@ -98,7 +111,12 @@ func (v Value) IsBytes() bool {
 	return valueType(v.a>>62) == typeBytes
 }
 
-func (v Value) Bytes() ([]byte, bool) {
+func (v Value) Bytes() []byte {
+	p, _ := v.BytesB()
+	return p
+}
+
+func (v Value) BytesB() ([]byte, bool) {
 	if valueType(v.a>>62) != typeBytes {
 		return nil, false
 	}
@@ -127,7 +145,12 @@ func (v Value) IsInterface() bool {
 	return valueType(v.a>>62) == typeInterface
 }
 
-func (v Value) Interface() (interface{}, bool) {
+func (v Value) Interface() interface{} {
+	i, _ := v.InterfaceB()
+	return i
+}
+
+func (v Value) InterfaceB() (interface{}, bool) {
 	if valueType(v.a>>62) != typeInterface {
 		return nil, false
 	}
@@ -146,15 +169,15 @@ func (v Value) Value() interface{} {
 	var a interface{}
 	switch true {
 	case v.IsInt64():
-		a, _ = v.Int64()
+		a = v.Int64()
 	case v.IsFloat64():
-		a, _ = v.Float64()
+		a = v.Float64()
 	case v.IsString():
-		a, _ = v.String()
+		a = v.String()
 	case v.IsBytes():
-		a, _ = v.Bytes()
+		a = v.Bytes()
 	case v.IsInterface():
-		a, _ = v.Interface()
+		a = v.Interface()
 	}
 	return a
 }
