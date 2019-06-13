@@ -1,6 +1,7 @@
 package waitobject
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,19 +21,20 @@ func (n *notifier) isvalid() bool {
 	return atomic.LoadPointer((*unsafe.Pointer)(unsafe.Pointer(&n.obj))) != unsafe.Pointer(uintptr(0))
 }
 
-var timeoutWheel struct {
-	secmin [60][60]struct {
-		sync.Mutex
-		list []*notifier
+var (
+	timeoutWheel struct {
+		secmin [60][60]struct {
+			sync.Mutex
+			list []*notifier
+		}
 	}
-	timeoutmark *byte
-}
+	debug bool
+)
 
 func init() {
-	timeoutWheel.timeoutmark = new(byte)
 	go func() {
 		for t := range time.Tick(time.Second) {
-			s, m, now := t.Second(), t.Minute(), t.UnixNano()
+			s, m, now := t.Second(), t.Minute(), t.Unix()
 
 			repeat := false
 
@@ -42,30 +44,39 @@ func init() {
 			for i := len(ts.list) - 1; i >= 0; i-- {
 				n := ts.list[i]
 
-				if n.deadline > now+1e9 {
+				if debug {
+					log.Println("[debug]", repeat, "notifier:", n, now, n.deadline > now)
+				}
+
+				if n.deadline > now && n.isvalid() {
 					continue
 				}
 
-				if !n.isvalid() {
-					continue
-				}
-
-				// object timedout, remove it from the wheel and send each listener a timeoutmark
+				// Remove the notifier, and if it is valid, tell its object to time out
 				ts.list = append(ts.list[:i], ts.list[i+1:]...)
-				n.obj.Touch(timeoutWheel.timeoutmark)
+				if n.isvalid() {
+					n.obj.mu.Lock()
+					if debug {
+						log.Println("[debug] broadcast by wheel")
+					}
+					n.obj.sig.Broadcast()
+					n.obj.mu.Unlock()
+				}
 			}
 			ts.Unlock()
 
 			if !repeat {
 				// Dial back 1 second to check if any objects which should time out at "this second"
 				// are added to the "previous second" because of clock precision
-				t = time.Unix(0, now-1e9)
+				t = time.Unix(now-1, 0)
 				s, m = t.Second(), t.Minute()
 				repeat = true
 				goto REPEAT
 			}
 		}
 	}()
+
+	log.SetFlags(log.Lshortfile | log.Lmicroseconds | log.Ltime)
 }
 
 type Object struct {
@@ -83,9 +94,12 @@ func New() *Object {
 
 func (o *Object) Touch(v interface{}) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	if debug {
+		log.Println("[debug] broadcast by touching")
+	}
 	o.v = v
 	o.sig.Broadcast()
+	o.mu.Unlock()
 }
 
 func (o *Object) SetWaitDeadline(t time.Time) {
@@ -94,44 +108,64 @@ func (o *Object) SetWaitDeadline(t time.Time) {
 
 	if o.rev != nil {
 		// Current object has a notifier in the timeoutwheel
-		// invalidate to prevent it from firing any timeout events in the future
+		// invalidate to prevent it from firing any old timeout events in the future
 		o.rev.invalidate()
 		o.rev = nil
 	}
 
 	if t.IsZero() {
-		o.v = nil
 		return
 	}
 
-	s, m := t.Second(), t.Minute()
-	ts := &timeoutWheel.secmin[s][m]
+	o.rev = &notifier{deadline: t.Unix(), obj: o}
+	if o.isTimedout() {
+		if debug {
+			log.Println("direct (already) timeout")
+		}
+		o.sig.Broadcast()
+		return
+	}
 
+	ts := &timeoutWheel.secmin[t.Second()][t.Minute()]
 	ts.Lock()
-	o.rev = &notifier{deadline: t.UnixNano(), obj: o}
 	ts.list = append(ts.list, o.rev)
 	ts.Unlock()
 }
 
 func (o *Object) isTimedout() bool {
-	if o.rev != nil && time.Now().UnixNano() > o.rev.deadline {
-		return true
+	if o.rev == nil {
+		return false
 	}
-	if m, _ := o.v.(*byte); m == timeoutWheel.timeoutmark {
-		return true
+
+	ns := time.Now().Unix()
+	cd := o.rev.deadline
+
+	a := ns >= cd
+
+	if debug {
+		log.Println("timed out, now:", ns, "deadline:", cd)
 	}
-	return false
+	return a
 }
 
 func (o *Object) Wait() (interface{}, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	// Before waiting for any data, return early if it is already timed out
 	if o.isTimedout() {
 		return nil, false
 	}
 
-	o.sig.Wait()
+	if !debug {
+		o.sig.Wait()
+	} else {
+		log.Println("wait start", o.v)
+		o.sig.Wait()
+		log.Println("wait end", o.v)
+	}
 
+	// After receiving any data, return early if received data is a timeout event
 	if o.isTimedout() {
 		return nil, false
 	}
