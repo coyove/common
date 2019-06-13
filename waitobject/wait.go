@@ -34,6 +34,9 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.UnixNano()
 
+			repeat := false
+
+		REPEAT:
 			ts := &timeoutWheel.secmin[s][m]
 			ts.Lock()
 			for i := len(ts.list) - 1; i >= 0; i-- {
@@ -52,6 +55,15 @@ func init() {
 				n.obj.Touch(timeoutWheel.timeoutmark)
 			}
 			ts.Unlock()
+
+			if !repeat {
+				// Dial back 1 second to check if any objects which should time out at "this second"
+				// are added to the "previous second" because of clock precision
+				t = time.Unix(0, now-1e9)
+				s, m = t.Second(), t.Minute()
+				repeat = true
+				goto REPEAT
+			}
 		}
 	}()
 }
@@ -79,35 +91,25 @@ func (o *Object) Touch(v interface{}) {
 func (o *Object) SetWaitDeadline(t time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	if o.rev != nil {
+		// Current object has a notifier in the timeoutwheel
+		// invalidate to prevent it from firing any timeout events in the future
+		o.rev.invalidate()
+		o.rev = nil
+	}
+
 	if t.IsZero() {
-		if o.rev != nil {
-			// clean the object pointer in the corresponding notifier,
-			// to prevent it from firing timeout events in the future
-			o.rev.invalidate()
-			o.rev = nil
-		}
 		o.v = nil
 		return
 	}
 
 	s, m := t.Second(), t.Minute()
 	ts := &timeoutWheel.secmin[s][m]
+
 	ts.Lock()
-
-	if o.rev != nil {
-		// clean the old timeout notifer
-		o.rev.invalidate()
-	}
-
-	o.rev = &notifier{
-		deadline: t.UnixNano(),
-		obj:      o,
-	}
-	if len(ts.list) == 0 {
-		ts.list = []*notifier{o.rev}
-	} else {
-		ts.list = append(ts.list, o.rev)
-	}
+	o.rev = &notifier{deadline: t.UnixNano(), obj: o}
+	ts.list = append(ts.list, o.rev)
 	ts.Unlock()
 }
 

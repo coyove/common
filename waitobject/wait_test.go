@@ -18,6 +18,38 @@ func TestObjectTimeout(t *testing.T) {
 
 func TestObjectTimeout2(t *testing.T) {
 	o := New()
+	start := time.Now()
+
+	go func() {
+		time.Sleep(time.Second)
+		o.SetWaitDeadline(time.Now())
+		time.Sleep(time.Second)
+		o.Touch(1)
+	}()
+
+	_, ok := o.Wait()
+	if ok {
+		t.FailNow()
+	}
+
+	if time.Since(start).Seconds() < 1 {
+		t.FailNow()
+	}
+
+	_, ok = o.Wait()
+	if ok {
+		t.FailNow()
+	}
+
+	o.SetWaitDeadline(time.Time{})
+	v, _ := o.Wait()
+	if v.(int) != 1 {
+		t.FailNow()
+	}
+}
+
+func TestObjectTimeout3(t *testing.T) {
+	o := New()
 	go func() {
 		for i := 0; i < 5; i++ {
 			time.Sleep(time.Second * 2)
