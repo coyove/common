@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+func I(i int) func(interface{}) interface{} { return func(interface{}) interface{} { return i } }
+
 func TestObjectTimeout(t *testing.T) {
 	debug = true
 	o := New()
@@ -26,7 +28,7 @@ func TestObjectTimeout2(t *testing.T) {
 		time.Sleep(time.Second)
 		o.SetWaitDeadline(time.Now())
 		time.Sleep(time.Second)
-		o.Touch(1)
+		o.Touch(I(1))
 	}()
 
 	_, ok := o.Wait()
@@ -55,7 +57,7 @@ func TestObjectTimeout3(t *testing.T) {
 	go func() {
 		for i := 0; i < 5; i++ {
 			time.Sleep(time.Second * 2)
-			o.Touch(i)
+			o.Touch(I(i))
 		}
 	}()
 	o.SetWaitDeadline(time.Now().Add(time.Second * 5))
@@ -92,9 +94,9 @@ func TestObjectTimeoutThenRead(t *testing.T) {
 	o := New()
 	go func() {
 		time.Sleep(1000 * time.Millisecond)
-		o.Touch(1)
+		o.Touch(I(1))
 		time.Sleep(3000 * time.Millisecond)
-		o.Touch(2)
+		o.Touch(I(2))
 	}()
 	o.SetWaitDeadline(time.Now().Add(time.Second * 2))
 	v, _ := o.Wait()
@@ -111,11 +113,11 @@ func TestObjectTimeoutThenRead(t *testing.T) {
 
 func TestObject(t *testing.T) {
 	o := New()
-	o.Touch(2)
+	o.Touch(I(2))
 
 	go func() {
 		time.Sleep(time.Second)
-		o.Touch(1)
+		o.Touch(I(1))
 	}()
 
 	var count uint64
