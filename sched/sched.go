@@ -37,7 +37,7 @@ func init() {
 				}
 
 				ts.list = append(ts.list[:i], ts.list[i+1:]...)
-				n.callback()
+				go n.callback()
 			}
 			ts.Unlock()
 
@@ -82,7 +82,7 @@ func Schedule(callback func(), deadline time.Time) SchedKey {
 	return key
 }
 
-func Unschedule(key SchedKey) {
+func (key SchedKey) Cancel() {
 	s := int(key>>58) - 1
 	m := int(key<<6>>58) - 1
 	if s < 0 || s > 59 || m < 0 || m > 59 {
@@ -97,4 +97,9 @@ func Unschedule(key SchedKey) {
 		}
 	}
 	ts.Unlock()
+}
+
+func (key *SchedKey) Reschedule(callback func(), deadline time.Time) {
+	key.Cancel()
+	*key = Schedule(callback, deadline)
 }
