@@ -3,13 +3,15 @@ package sched
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var Verbose = true
 
 type notifier struct {
-	deadline int64
+	deadline uint32
+	async    bool
 	callback func()
 }
 
@@ -32,13 +34,18 @@ func init() {
 			ts := &timeoutWheel.secmin[s][m]
 			ts.Lock()
 			for k, n := range ts.list {
-				if n.deadline > now {
+				if int64(n.deadline) > now {
 					continue
 				}
 
 				delete(ts.list, k)
 				count++
-				go n.callback()
+
+				if n.async {
+					go n.callback()
+				} else {
+					n.callback()
+				}
 			}
 			ts.Unlock()
 
@@ -61,9 +68,23 @@ func init() {
 type SchedKey uint64
 
 func Schedule(callback func(), deadline time.Time) SchedKey {
-	if time.Now().Unix() >= deadline.Unix() {
+	return schedule(callback, true, deadline)
+}
+
+func ScheduleSync(callback func(), deadline time.Time) SchedKey {
+	return schedule(callback, false, deadline)
+}
+
+func schedule(callback func(), async bool, deadline time.Time) SchedKey {
+	if now, dead := time.Now().Unix(), deadline.Unix(); now > dead {
 		// timed out already
-		callback()
+		return 0
+	} else if now == dead {
+		if async {
+			go callback()
+		} else {
+			callback()
+		}
 		return 0
 	}
 
@@ -82,8 +103,9 @@ func Schedule(callback func(), deadline time.Time) SchedKey {
 	}
 
 	ts.list[key] = &notifier{
-		deadline: deadline.Unix(),
+		deadline: uint32(deadline.Unix()),
 		callback: callback,
+		async:    async,
 	}
 
 	ts.Unlock()
@@ -98,13 +120,29 @@ func (key SchedKey) Cancel() {
 	}
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
-	if ts.list == nil {
+	if ts.list != nil {
 		delete(ts.list, key)
 	}
 	ts.Unlock()
 }
 
 func (key *SchedKey) Reschedule(callback func(), deadline time.Time) {
+	key.reschedule(callback, true, deadline)
+}
+
+func (key *SchedKey) RescheduleSync(callback func(), deadline time.Time) {
+	key.reschedule(callback, false, deadline)
+}
+
+func (key *SchedKey) reschedule(callback func(), async bool, deadline time.Time) {
+RETRY:
 	key.Cancel()
-	*key = Schedule(callback, deadline)
+	n := schedule(callback, async, deadline)
+
+	old := atomic.LoadUint64((*uint64)(key))
+	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
+		return
+	}
+	n.Cancel()
+	goto RETRY
 }
