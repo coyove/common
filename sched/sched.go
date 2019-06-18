@@ -1,12 +1,14 @@
 package sched
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
 
+var Verbose = true
+
 type notifier struct {
-	key      SchedKey
 	deadline int64
 	callback func()
 }
@@ -15,7 +17,7 @@ var timeoutWheel struct {
 	secmin [60][60]struct {
 		sync.Mutex
 		counter uint64
-		list    []*notifier
+		list    map[SchedKey]*notifier
 	}
 }
 
@@ -24,19 +26,18 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
 
-			repeat := false
+			repeat, count := false, 0
 
 		REPEAT:
 			ts := &timeoutWheel.secmin[s][m]
 			ts.Lock()
-			for i := len(ts.list) - 1; i >= 0; i-- {
-				n := ts.list[i]
-
+			for k, n := range ts.list {
 				if n.deadline > now {
 					continue
 				}
 
-				ts.list = append(ts.list[:i], ts.list[i+1:]...)
+				delete(ts.list, k)
+				count++
 				go n.callback()
 			}
 			ts.Unlock()
@@ -48,6 +49,10 @@ func init() {
 				s, m = t.Second(), t.Minute()
 				repeat = true
 				goto REPEAT
+			}
+
+			if Verbose {
+				fmt.Println(time.Now().Format(time.StampMilli), "fired:", count)
 			}
 		}
 	}()
@@ -72,11 +77,14 @@ func Schedule(callback func(), deadline time.Time) SchedKey {
 	// key will never be 0
 	key := SchedKey(uint64(s+1)<<58 | uint64(m+1)<<52 | (ts.counter & 0xfffffffffffff))
 
-	ts.list = append(ts.list, &notifier{
-		key:      key,
+	if ts.list == nil {
+		ts.list = map[SchedKey]*notifier{}
+	}
+
+	ts.list[key] = &notifier{
 		deadline: deadline.Unix(),
 		callback: callback,
-	})
+	}
 
 	ts.Unlock()
 	return key
@@ -90,11 +98,8 @@ func (key SchedKey) Cancel() {
 	}
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
-	for i := len(ts.list) - 1; i >= 0; i-- {
-		if ts.list[i].key == key {
-			ts.list = append(ts.list[:i], ts.list[i+1:]...)
-			break
-		}
+	if ts.list == nil {
+		delete(ts.list, key)
 	}
 	ts.Unlock()
 }
