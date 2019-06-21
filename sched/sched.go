@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	//sync "github.com/sasha-s/go-deadlock"
 )
 
 var Verbose = true
@@ -21,6 +22,7 @@ var timeoutWheel struct {
 		counter uint64
 		list    map[SchedKey]*notifier
 	}
+	maxasyncfires, maxsyncfires int
 }
 
 func init() {
@@ -28,26 +30,32 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
 
-			repeat, count := false, 0
+			repeat, acount, scount := false, 0, 0
 
 		REPEAT:
 			ts := &timeoutWheel.secmin[s][m]
 			ts.Lock()
+			syncNotifiers := make([]*notifier, 0, len(ts.list))
 			for k, n := range ts.list {
 				if int64(n.deadline) > now {
 					continue
 				}
 
 				delete(ts.list, k)
-				count++
 
 				if n.async {
+					acount++
 					go n.callback()
 				} else {
-					n.callback()
+					scount++
+					syncNotifiers = append(syncNotifiers, n)
 				}
 			}
 			ts.Unlock()
+
+			for _, n := range syncNotifiers {
+				n.callback()
+			}
 
 			if !repeat {
 				// Dial back 1 second to check if any objects which should time out at "this second"
@@ -58,8 +66,16 @@ func init() {
 				goto REPEAT
 			}
 
+			if acount > timeoutWheel.maxasyncfires {
+				timeoutWheel.maxasyncfires = acount
+			}
+			if scount > timeoutWheel.maxsyncfires {
+				timeoutWheel.maxsyncfires = scount
+			}
+
 			if Verbose {
-				fmt.Println(time.Now().Format(time.StampMilli), "fired:", count)
+				fmt.Print(time.Now().Format(time.StampMilli),
+					" fires: async(", acount, " max:", timeoutWheel.maxasyncfires, ") sync(", scount, " max:", timeoutWheel.maxsyncfires, ")\n")
 			}
 		}
 	}()
