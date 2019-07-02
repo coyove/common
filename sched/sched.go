@@ -32,10 +32,11 @@ func init() {
 
 			repeat, acount, scount := false, 0, 0
 
+			syncNotifiers := make([]*notifier, 0, 16)
+
 		REPEAT:
 			ts := &timeoutWheel.secmin[s][m]
 			ts.Lock()
-			syncNotifiers := make([]*notifier, 0, len(ts.list))
 			for k, n := range ts.list {
 				if int64(n.deadline) > now {
 					continue
@@ -53,10 +54,6 @@ func init() {
 			}
 			ts.Unlock()
 
-			for _, n := range syncNotifiers {
-				n.callback()
-			}
-
 			if !repeat {
 				// Dial back 1 second to check if any objects which should time out at "this second"
 				// are added to the "previous second" because of clock precision
@@ -64,6 +61,10 @@ func init() {
 				s, m = t.Second(), t.Minute()
 				repeat = true
 				goto REPEAT
+			}
+
+			for _, n := range syncNotifiers {
+				n.callback()
 			}
 
 			if acount > timeoutWheel.maxasyncfires {
@@ -137,7 +138,9 @@ func (key SchedKey) Cancel() {
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
 	if ts.list != nil {
+		//fmt.Println("+", ts.list, key)
 		delete(ts.list, key)
+		//fmt.Println("-", ts.list)
 	}
 	ts.Unlock()
 }
@@ -152,10 +155,9 @@ func (key *SchedKey) RescheduleSync(callback func(), deadline time.Time) {
 
 func (key *SchedKey) reschedule(callback func(), async bool, deadline time.Time) {
 RETRY:
-	key.Cancel()
-	n := schedule(callback, async, deadline)
-
 	old := atomic.LoadUint64((*uint64)(key))
+	SchedKey(old).Cancel()
+	n := schedule(callback, async, deadline)
 	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
 		return
 	}
