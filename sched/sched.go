@@ -11,8 +11,7 @@ import (
 var Verbose = true
 
 type notifier struct {
-	deadline uint32
-	async    bool
+	deadline int64
 	callback func()
 }
 
@@ -22,7 +21,7 @@ var timeoutWheel struct {
 		counter uint64
 		list    map[SchedKey]*notifier
 	}
-	maxasyncfires, maxsyncfires int
+	maxsyncfires int
 }
 
 func init() {
@@ -30,7 +29,7 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
 
-			repeat, acount, scount := false, 0, 0
+			repeat, scount := false, 0
 
 			syncNotifiers := make([]*notifier, 0, 16)
 
@@ -44,13 +43,8 @@ func init() {
 
 				delete(ts.list, k)
 
-				if n.async {
-					acount++
-					go n.callback()
-				} else {
-					scount++
-					syncNotifiers = append(syncNotifiers, n)
-				}
+				scount++
+				syncNotifiers = append(syncNotifiers, n)
 			}
 			ts.Unlock()
 
@@ -67,16 +61,12 @@ func init() {
 				n.callback()
 			}
 
-			if acount > timeoutWheel.maxasyncfires {
-				timeoutWheel.maxasyncfires = acount
-			}
 			if scount > timeoutWheel.maxsyncfires {
 				timeoutWheel.maxsyncfires = scount
 			}
 
 			if Verbose {
-				fmt.Print(time.Now().Format(time.StampMilli),
-					" fires: async(", acount, " max:", timeoutWheel.maxasyncfires, ") sync(", scount, " max:", timeoutWheel.maxsyncfires, ")\n")
+				fmt.Println(time.Now().Format(time.StampMilli), "fires:", scount, "max:", timeoutWheel.maxsyncfires)
 			}
 		}
 	}()
@@ -84,24 +74,26 @@ func init() {
 
 type SchedKey uint64
 
-func Schedule(callback func(), deadline time.Time) SchedKey {
-	return schedule(callback, true, deadline)
-}
+func Schedule(callback func(), deadlineOrTimeout interface{}) SchedKey {
+	deadline := time.Now()
+	now := deadline.Unix()
 
-func ScheduleSync(callback func(), deadline time.Time) SchedKey {
-	return schedule(callback, false, deadline)
-}
+	switch d := deadlineOrTimeout.(type) {
+	case time.Time:
+		deadline = d
+	case time.Duration:
+		deadline = deadline.Add(d)
+	default:
+		panic("invalid deadline(time.Time) or timeout(time.Duration) value")
+	}
 
-func schedule(callback func(), async bool, deadline time.Time) SchedKey {
-	if now, dead := time.Now().Unix(), deadline.Unix(); now > dead {
+	dead := deadline.Unix()
+
+	if now > dead {
 		// timed out already
 		return 0
 	} else if now == dead {
-		if async {
-			go callback()
-		} else {
-			callback()
-		}
+		callback()
 		return 0
 	}
 
@@ -120,9 +112,8 @@ func schedule(callback func(), async bool, deadline time.Time) SchedKey {
 	}
 
 	ts.list[key] = &notifier{
-		deadline: uint32(deadline.Unix()),
+		deadline: deadline.Unix(),
 		callback: callback,
-		async:    async,
 	}
 
 	ts.Unlock()
@@ -138,26 +129,16 @@ func (key SchedKey) Cancel() {
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
 	if ts.list != nil {
-		//fmt.Println("+", ts.list, key)
 		delete(ts.list, key)
-		//fmt.Println("-", ts.list)
 	}
 	ts.Unlock()
 }
 
-func (key *SchedKey) Reschedule(callback func(), deadline time.Time) {
-	key.reschedule(callback, true, deadline)
-}
-
-func (key *SchedKey) RescheduleSync(callback func(), deadline time.Time) {
-	key.reschedule(callback, false, deadline)
-}
-
-func (key *SchedKey) reschedule(callback func(), async bool, deadline time.Time) {
+func (key *SchedKey) Reschedule(callback func(), deadlineOrTimeout interface{}) {
 RETRY:
 	old := atomic.LoadUint64((*uint64)(key))
 	SchedKey(old).Cancel()
-	n := schedule(callback, async, deadline)
+	n := Schedule(callback, deadlineOrTimeout)
 	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
 		return
 	}

@@ -5,14 +5,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"testing"
 	"time"
 )
-
-func init() {
-	testMode = "test"
-}
 
 func TestWrite(t *testing.T) {
 	w, err := New("/tmp/zzz")
@@ -49,6 +46,7 @@ func TestWrite2(t *testing.T) {
 		j := make([]byte, 8)
 		binary.BigEndian.PutUint64(j, uint64(i))
 		w.Write(j)
+		//fmt.Println(i)
 	}
 }
 
@@ -62,19 +60,23 @@ func BenchmarkUnixSocket(b *testing.B) {
 		w.Write([]byte(foo(i)))
 	}
 
+	fi, _ := os.Stat("/tmp/zzz")
+	b.Log(fi.Size())
 	os.Remove("/tmp/zzz")
 }
 
 func BenchmarkUnixSocketClass(b *testing.B) {
 	w, _ := New("/tmp/zzz")
-	w.Classifier = func([]byte) bool {
-		return false
-	}
 
 	for i := 0; i < b.N; i++ {
-		w.Write([]byte(foo(i)))
+		if rand.Intn(2) == 0 {
+			w.Write([]byte(foo(i)))
+		} else {
+			w.SlowWrite([]byte(foo(i)))
+		}
 	}
 
+	b.Log(os.Stat("/tmp/zzz"))
 	os.Remove("/tmp/zzz")
 }
 

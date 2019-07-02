@@ -20,7 +20,7 @@ func TestSchedTimedoutAlready(t *testing.T) {
 	if ok || key != 0 {
 		t.FailNow()
 	}
-	key = ScheduleSync(func() { ok = true }, time.Now())
+	key = Schedule(func() { ok = true }, time.Now())
 	if !ok || key != 0 {
 		t.FailNow()
 	}
