@@ -120,7 +120,7 @@ func Schedule(callback func(), deadlineOrTimeout interface{}) SchedKey {
 	return key
 }
 
-func (key SchedKey) Cancel() {
+func (key SchedKey) Cancel() (oldcallback func()) {
 	s := int(key>>58) - 1
 	m := int(key<<6>>58) - 1
 	if s < 0 || s > 59 || m < 0 || m > 59 {
@@ -129,15 +129,23 @@ func (key SchedKey) Cancel() {
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
 	if ts.list != nil {
+		if n := ts.list[key]; n != nil {
+			oldcallback = n.callback
+		}
 		delete(ts.list, key)
 	}
 	ts.Unlock()
+	return
 }
 
+// If callback is nil, the old one will be reused
 func (key *SchedKey) Reschedule(callback func(), deadlineOrTimeout interface{}) {
 RETRY:
 	old := atomic.LoadUint64((*uint64)(key))
-	SchedKey(old).Cancel()
+	f := SchedKey(old).Cancel()
+	if callback == nil {
+		callback = f
+	}
 	n := Schedule(callback, deadlineOrTimeout)
 	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
 		return

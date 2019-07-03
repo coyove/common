@@ -21,12 +21,8 @@ const (
 	bufferSize = 1024 * 1024
 )
 
-var (
-	qk = make([]byte, 4096)
-)
-
 func hashName(n string) string {
-	x := sha1.Sum([]byte(n))
+	x := sha1.Sum([]byte(n + forforkName))
 	return filepath.Join(os.TempDir(), fmt.Sprintf("wa-%x", x))
 }
 
@@ -92,6 +88,7 @@ func init() {
 		flush()
 		output.Close()
 		os.Remove(path)
+
 		fmt.Println("Writer agent out, cleaned:", path, output.Name())
 	})
 
@@ -138,9 +135,12 @@ func (w *Writer) SlowWrite(p []byte) (n int, err error) {
 }
 
 func (w *Writer) writeLocked(p []byte) (n int, err error) {
-	N := len(p)
-	if N == 0 {
+	if len(p) == 0 {
 		return 0, nil
+	}
+
+	if len(p) >= 1<<32 {
+		return 0, fmt.Errorf("buffer too large")
 	}
 
 	p = append(p, 0, 0, 0, 0)
@@ -162,7 +162,7 @@ AGAIN:
 		panic("lost writer agent permanently")
 	}
 
-	return N, nil
+	return len(p) - 4, nil
 }
 
 func New(output string) (*Writer, error) {
