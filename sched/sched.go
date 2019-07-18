@@ -1,7 +1,8 @@
 package sched
 
 import (
-	"fmt"
+	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,44 +30,44 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
 
-			repeat, scount := false, 0
-
 			syncNotifiers := make([]*notifier, 0, 16)
 
-		REPEAT:
-			ts := &timeoutWheel.secmin[s][m]
-			ts.Lock()
-			for k, n := range ts.list {
-				if int64(n.deadline) > now {
-					continue
+			for i := 0; i < 2; i++ {
+				ts := &timeoutWheel.secmin[s][m]
+				ts.Lock()
+				for k, n := range ts.list {
+					if n.deadline/1e9 > now {
+						continue
+					}
+
+					delete(ts.list, k)
+					syncNotifiers = append(syncNotifiers, n)
 				}
+				ts.Unlock()
 
-				delete(ts.list, k)
-
-				scount++
-				syncNotifiers = append(syncNotifiers, n)
-			}
-			ts.Unlock()
-
-			if !repeat {
-				// Dial back 1 second to check if any objects which should time out at "this second"
+				// Dial back 1 second to check if any callbacks which should time out at "this second"
 				// are added to the "previous second" because of clock precision
 				t = time.Unix(now-1, 0)
 				s, m = t.Second(), t.Minute()
-				repeat = true
-				goto REPEAT
 			}
 
+			sort.Slice(syncNotifiers, func(i, j int) bool {
+				return syncNotifiers[i].deadline < syncNotifiers[j].deadline
+			})
+
 			for _, n := range syncNotifiers {
+				if diff, idiff := n.deadline/1e6-time.Now().UnixNano()/1e6, now*1e3-n.deadline/1e6; diff > 120 && idiff < 880 {
+					time.Sleep(time.Duration(diff) * time.Millisecond)
+				}
 				n.callback()
 			}
 
-			if scount > timeoutWheel.maxsyncfires {
-				timeoutWheel.maxsyncfires = scount
+			if len(syncNotifiers) > timeoutWheel.maxsyncfires {
+				timeoutWheel.maxsyncfires = len(syncNotifiers)
 			}
 
 			if Verbose {
-				fmt.Println(time.Now().Format(time.StampMilli), "fires:", scount, "max:", timeoutWheel.maxsyncfires)
+				log.Println("fires:", len(syncNotifiers), "max:", timeoutWheel.maxsyncfires)
 			}
 		}
 	}()
@@ -112,7 +113,7 @@ func Schedule(callback func(), deadlineOrTimeout interface{}) SchedKey {
 	}
 
 	ts.list[key] = &notifier{
-		deadline: deadline.Unix(),
+		deadline: deadline.UnixNano(),
 		callback: callback,
 	}
 
