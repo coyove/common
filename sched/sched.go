@@ -144,6 +144,11 @@ func (key *SchedKey) Reschedule(callback func(), deadlineOrTimeout interface{}) 
 RETRY:
 	old := atomic.LoadUint64((*uint64)(key))
 	f := SchedKey(old).Cancel()
+	if f == nil && callback == nil {
+		// The key has already been canceled, there is no way to reschedule it
+		// if no valid callback is provided
+		return
+	}
 	if callback == nil {
 		callback = f
 	}
@@ -151,6 +156,7 @@ RETRY:
 	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
 		return
 	}
+
 	n.Cancel()
 	goto RETRY
 }
