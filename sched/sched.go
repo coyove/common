@@ -56,9 +56,6 @@ func init() {
 			})
 
 			for _, n := range syncNotifiers {
-				if diff, idiff := n.deadline/1e6-time.Now().UnixNano()/1e6, now*1e3-n.deadline/1e6; diff > 120 && idiff < 880 {
-					time.Sleep(time.Duration(diff) * time.Millisecond)
-				}
 				n.callback()
 			}
 
