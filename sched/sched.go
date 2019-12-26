@@ -1,7 +1,9 @@
 package sched
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,11 @@ var timeoutWheel struct {
 }
 
 func init() {
+	f, err := os.Create("sclog")
+	if err != nil {
+		panic(err)
+	}
+
 	go func() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
@@ -35,6 +42,7 @@ func init() {
 			for i := 0; i < 2; i++ {
 				ts := &timeoutWheel.secmin[s][m]
 				ts.Lock()
+				f.Write([]byte(fmt.Sprintf("before: %d\n", len(ts.list))))
 				for k, n := range ts.list {
 					if n.deadline/1e9 > now {
 						continue
@@ -43,6 +51,7 @@ func init() {
 					delete(ts.list, k)
 					syncNotifiers = append(syncNotifiers, n)
 				}
+				f.Write([]byte(fmt.Sprintf("after: %d\n", len(ts.list))))
 				ts.Unlock()
 
 				// Dial back 1 second to check if any callbacks which should time out at "this second"
