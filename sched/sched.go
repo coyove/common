@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +21,7 @@ var timeoutWheel struct {
 	secmin [60][60]struct {
 		sync.Mutex
 		counter uint64
-		list    map[SchedKey]*notifier
+		list    map[SchedKey]notifier
 	}
 	maxsyncfires int
 }
@@ -37,7 +36,7 @@ func init() {
 		for t := range time.Tick(time.Second) {
 			s, m, now := t.Second(), t.Minute(), t.Unix()
 
-			syncNotifiers := make([]*notifier, 0, 16)
+			syncNotifiers := make([]notifier, 0, 16)
 
 			for i := 0; i < 2; i++ {
 				ts := &timeoutWheel.secmin[s][m]
@@ -59,10 +58,6 @@ func init() {
 				t = time.Unix(now-1, 0)
 				s, m = t.Second(), t.Minute()
 			}
-
-			sort.Slice(syncNotifiers, func(i, j int) bool {
-				return syncNotifiers[i].deadline < syncNotifiers[j].deadline
-			})
 
 			for _, n := range syncNotifiers {
 				n.callback()
@@ -115,10 +110,10 @@ func Schedule(callback func(), deadlineOrTimeout interface{}) SchedKey {
 	key := SchedKey(uint64(s+1)<<58 | uint64(m+1)<<52 | (ts.counter & 0xfffffffffffff))
 
 	if ts.list == nil {
-		ts.list = map[SchedKey]*notifier{}
+		ts.list = map[SchedKey]notifier{}
 	}
 
-	ts.list[key] = &notifier{
+	ts.list[key] = notifier{
 		deadline: deadline.UnixNano(),
 		callback: callback,
 	}
@@ -136,7 +131,7 @@ func (key SchedKey) Cancel() (oldcallback func()) {
 	ts := &timeoutWheel.secmin[s][m]
 	ts.Lock()
 	if ts.list != nil {
-		if n := ts.list[key]; n != nil {
+		if n, ok := ts.list[key]; ok {
 			oldcallback = n.callback
 		}
 		delete(ts.list, key)
