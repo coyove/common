@@ -41,7 +41,6 @@ func init() {
 			for i := 0; i < 2; i++ {
 				ts := &timeoutWheel.secmin[s][m]
 				ts.Lock()
-				f.Write([]byte(fmt.Sprintf("before: %d\n", len(ts.list))))
 				for k, n := range ts.list {
 					if n.deadline/1e9 > now {
 						continue
@@ -50,7 +49,6 @@ func init() {
 					delete(ts.list, k)
 					syncNotifiers = append(syncNotifiers, n)
 				}
-				f.Write([]byte(fmt.Sprintf("after: %d\n", len(ts.list))))
 				ts.Unlock()
 
 				// Dial back 1 second to check if any callbacks which should time out at "this second"
@@ -66,6 +64,17 @@ func init() {
 			if len(syncNotifiers) > timeoutWheel.maxsyncfires {
 				timeoutWheel.maxsyncfires = len(syncNotifiers)
 			}
+
+			length := 0
+			for i := range timeoutWheel.secmin {
+				for j := range timeoutWheel.secmin[i] {
+					timeoutWheel.secmin[i][j].Lock()
+					length += len(timeoutWheel.secmin[i][j].list)
+					timeoutWheel.secmin[i][j].Unlock()
+				}
+			}
+
+			f.Write([]byte(fmt.Sprintf("len: %d\n", length)))
 
 			if Verbose {
 				log.Println("fires:", len(syncNotifiers), "max:", timeoutWheel.maxsyncfires)
