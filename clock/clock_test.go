@@ -20,7 +20,7 @@ func TestNow(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			for i := 0; i < 1e3; i++ {
-				n := Now()
+				n := Timestamp()
 				if _, ok := m.Load(n); ok {
 					t.Fatal(n)
 				}

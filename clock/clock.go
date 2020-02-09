@@ -47,11 +47,15 @@ func timeNow() (int64, int64) {
 	return sec, sec<<30 | (ctr & 0x4fffffff)
 }
 
-func Now() int64 {
+// Timestamp returns a timestamp that is guaranteed to be
+// goroutine-safe and globally unique on this machine as long as the process persists
+func Timestamp() int64 {
 	_, v := timeNow()
 	return v
 }
 
+// Unix returns the unix timestamp based on when the process started
+// so its returned value will not affected by the changing of system wall timer
 func Unix() int64 {
 	v, _ := timeNow()
 	return v
