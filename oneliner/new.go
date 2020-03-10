@@ -36,6 +36,7 @@ func (it *Interpreter) Install(name, doc string, f interface{}) {
 		f:      rf,
 		name:   name,
 		error1: t.NumOut() == 1 && t.Out(0).Implements(errorInterface),
+		vararg: t.IsVariadic(),
 	}
 
 	if doc != "" {
@@ -87,22 +88,83 @@ func New(onMissing func(k string) (interface{}, error)) *Interpreter {
 	it.Install("==", "", func(a, b interface{}) bool { return a == b })
 	it.Install("!=", "", func(a, b interface{}) bool { return a != b })
 	it.Install("<>", "", func(a, b interface{}) bool { return a != b })
-	it.Install("^", "concat two strings", func(a, b string) string { return a + b })
-	it.Install("+", "add two integer numbers", func(a, b int64) int64 { return a + b })
-	it.Install("-", "subtract two integer numbers", func(a, b int64) int64 { return a - b })
-	it.Install("*", "", func(a, b int64) int64 { return a * b })
-	it.Install("/", "", func(a, b int64) int64 { return a / b })
-	it.Install("%", "", func(a, b int64) int64 { return a % b })
+
+	it.Install("^", "concat strings", func(c ...string) string { return strings.Join(c, "") })
+
+	it.Install("+", "", func(c ...int64) (x int64) {
+		for _, c := range c {
+			x += c
+		}
+		return
+	})
+	it.Install("-", "", func(a int64, c ...int64) (x int64) {
+		x = a
+		for _, c := range c {
+			x -= c
+		}
+		return
+	})
+	it.Install("*", "", func(c ...int64) (x int64) {
+		x = 1
+		for _, c := range c {
+			x *= c
+		}
+		return
+	})
+	it.Install("/", "", func(a int64, c ...int64) (x int64) {
+		x = a
+		for _, c := range c {
+			x /= c
+		}
+		return
+	})
+	it.Install("%", "", func(a int64, c ...int64) (x int64) {
+		x = a
+		for _, c := range c {
+			x %= c
+		}
+		return
+	})
+	it.Install("+.", "", func(c ...float64) (x float64) {
+		for _, c := range c {
+			x += c
+		}
+		return
+	})
+	it.Install("-.", "", func(a float64, c ...float64) (x float64) {
+		x = a
+		for _, c := range c {
+			x -= c
+		}
+		return
+	})
+	it.Install("*.", "", func(c ...float64) (x float64) {
+		x = 1
+		for _, c := range c {
+			x *= c
+		}
+		return
+	})
+	it.Install("/.", "", func(a float64, c ...float64) (x float64) {
+		x = a
+		for _, c := range c {
+			x /= c
+		}
+		return
+	})
+	it.Install("%.", "", func(a float64, c ...float64) (x float64) {
+		x = a
+		for _, c := range c {
+			x = math.Remainder(x, c)
+		}
+		return
+	})
+
 	it.Install(">", "", func(a, b interface{}) bool { return !less(a, b) && a != b })
 	it.Install(">=", "", func(a, b interface{}) bool { return !less(a, b) })
 	it.Install("<", "", func(a, b interface{}) bool { return less(a, b) })
 	it.Install("<=", "", func(a, b interface{}) bool { return less(a, b) || a == b })
-	it.Install("+.", "add two float numbers", func(a, b float64) (float64, error) { return a + b, nil })
-	it.Install("-.", "subtract two float numbers", func(a, b float64) (float64, error) { return a - b, nil })
-	it.Install("*.", "", func(a, b float64) (float64, error) { return a * b, nil })
-	it.Install("**.", "", func(a, b float64) (float64, error) { return math.Pow(a, b), nil })
-	it.Install("/.", "", func(a, b float64) (float64, error) { return a / b, nil })
-	it.Install("%.", "", func(a, b float64) (float64, error) { return math.Remainder(a, b), nil })
+
 	it.Install("json", "", func(a interface{}) (string, error) {
 		buf, err := json.MarshalIndent(a, "", "  ")
 		return string(buf), err

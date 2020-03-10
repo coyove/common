@@ -21,6 +21,7 @@ func TestOne(t *testing.T) {
 		return a, nil
 	})
 
+	t.Log(it.Funcs())
 	assert := func(v string) {
 		r, _, err := it.Run(v)
 		if err != nil {
@@ -29,7 +30,7 @@ func TestOne(t *testing.T) {
 		t.Log(v, r)
 	}
 
-	assert(`(= 1 (int "1"))`)
+	assert(`(= (+ (- (* 1))) (int "1"))`)
 	assert(`(= (k (var-test 1 2 3) 0) 3)`)
 	assert(`(map-keys (
 		map
@@ -39,4 +40,5 @@ func TestOne(t *testing.T) {
 	assert(`(assert (= true (< 1 2`)
 	assert(`(assert (if true true false`)
 	assert(`(assert (if (not true) false true`)
+	assert(`(assert (= (^ "a" "b" "c") "abc"`)
 }

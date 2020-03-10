@@ -13,10 +13,10 @@ import (
 )
 
 type Func struct {
-	nargs         int
-	name, comment string
-	f             reflect.Value
-	error1        bool
+	nargs          int
+	name, comment  string
+	f              reflect.Value
+	error1, vararg bool
 }
 
 type (
@@ -159,7 +159,11 @@ func (it *Interpreter) Run(tmpl string) (result interface{}, counter int64, err 
 func (it *Interpreter) Funcs() []string {
 	p := []string{}
 	for k, f := range it.fn {
-		p = append(p, fmt.Sprintf("%s/%d%s", k, f.nargs, f.comment))
+		x := fmt.Sprintf("%s/%d", k, f.nargs)
+		if f.vararg {
+			x += "+"
+		}
+		p = append(p, x+f.comment)
 	}
 	return p
 }
