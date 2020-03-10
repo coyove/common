@@ -16,19 +16,21 @@ type Func struct {
 	nargs         int
 	name, comment string
 	f             reflect.Value
+	error1        bool
 }
 
 var errorInterface = reflect.TypeOf((*error)(nil)).Elem()
 
 func (it *Interpreter) Install(name, doc string, f interface{}, comment ...string) {
 	rf := reflect.ValueOf(f)
-	if rf.Type().NumOut() != 2 || !rf.Type().Out(1).Implements(errorInterface) {
+	if rf.Type().NumOut() == 2 && !rf.Type().Out(1).Implements(errorInterface) {
 		panic("function should return 2 values: (value, error)")
 	}
 	it.fn[name] = &Func{
-		nargs: rf.Type().NumIn(),
-		f:     rf,
-		name:  name,
+		nargs:  rf.Type().NumIn(),
+		f:      rf,
+		name:   name,
+		error1: rf.Type().NumOut() == 1 && rf.Type().Out(0).Implements(errorInterface),
 	}
 	if doc != "" {
 		it.fn[name].comment = " - " + doc
@@ -43,54 +45,75 @@ type (
 	_int      int64
 )
 
-func (c _compound) exec(it *Interpreter) (interface{}, error) {
+func exec(expr interface{}, it *Interpreter) (interface{}, error) {
+	switch a := expr.(type) {
+	case _atom:
+		v, err := it.onMissing(string(a))
+		if err != nil {
+			return nil, (fmt.Errorf("atom: %v not supported, error: %v", a, err))
+		}
+		return v, nil
+	case _string:
+		return string(a), nil
+	case _float:
+		return float64(a), nil
+	case _int:
+		return int64(a), nil
+	}
+
+	c := expr.(_compound)
 	if len(c) == 0 {
 		return nil, nil
 	}
 
 	var args []reflect.Value
+	var lastarg interface{}
 	var callee *Func
+	var calleeType byte
 
 	switch a := c[0].(type) {
 	case _atom:
-		if a != "->" {
-			callee = it.fn[string(a)]
-			if callee == nil {
-				return nil, (fmt.Errorf("func %v not found", a))
+		switch a {
+		case "->":
+			calleeType = 'c'
+		case "if":
+			switch len(c) {
+			case 1, 2:
+				return nil, fmt.Errorf("too few arguments to call 'if'")
+			case 3, 4:
+				cond, err := exec(c[1], it)
+				if err != nil {
+					return nil, err
+				}
+				if cond == true {
+					return exec(c[2], it)
+				} else if len(c) == 4 {
+					return exec(c[3], it)
+				} else {
+					return nil, nil
+				}
 			}
+		default:
+			if callee = it.fn[string(a)]; callee == nil {
+				return nil, fmt.Errorf("func %v not found", a)
+			}
+			calleeType = 0
 		}
 	default:
 		return nil, (fmt.Errorf("closure not supported"))
 	}
 
 	for i := 1; i < len(c); i++ {
-		switch a := c[i].(type) {
-		case _atom:
-			v, err := it.onMissing(string(a))
-			if err != nil {
-				return nil, (fmt.Errorf("atom: %v not supported, error: %v", a, err))
-			}
-			args = append(args, reflect.ValueOf(v))
-		case _string:
-			args = append(args, reflect.ValueOf(string(a)))
-		case _float:
-			args = append(args, reflect.ValueOf(float64(a)))
-		case _int:
-			args = append(args, reflect.ValueOf(int64(a)))
-		case _compound:
-			res, err := a.exec(it)
-			if err != nil {
-				return nil, err
-			}
-			args = append(args, reflect.ValueOf(res))
+		res, err := exec(c[i], it)
+		if err != nil {
+			return nil, err
 		}
+		args = append(args, reflect.ValueOf(res))
+		lastarg = res
 	}
 
-	if callee == nil {
-		if len(args) == 0 {
-			return nil, nil
-		}
-		return args[len(args)-1].Interface(), nil
+	if calleeType == 'c' {
+		return lastarg, nil
 	}
 
 	if t := callee.f.Type(); !t.IsVariadic() && callee.nargs != len(args) {
@@ -100,6 +123,19 @@ func (c _compound) exec(it *Interpreter) (interface{}, error) {
 	}
 
 	res := callee.f.Call(args)
+	if len(res) == 0 {
+		return nil, nil
+	}
+
+	if len(res) == 1 {
+		if callee.error1 {
+			e, _ := res[0].Interface().(error)
+			return nil, e
+		}
+		return res[0].Interface(), nil
+	}
+
+	// log.Println((*(*[3]uintptr)(unsafe.Pointer(&res[1])))[2])
 	if err, _ := res[1].Interface().(error); err != nil {
 		return nil, err
 	}
@@ -112,11 +148,14 @@ func (it *Interpreter) Run(tmpl string) (result interface{}, counter int64, err 
 
 	defer func() {
 		if r := recover(); r != nil {
-			s := debug.Stack()
-			if idx := bytes.Index(s, []byte("reflect.Value.Call")); idx > -1 {
-				s = bytes.TrimSpace(s[:idx])
+			err, _ = r.(error)
+			if err == nil {
+				s := debug.Stack()
+				if idx := bytes.Index(s, []byte("reflect.Value.Call")); idx > -1 {
+					s = bytes.TrimSpace(s[:idx])
+				}
+				err = fmt.Errorf("recovered from panic: %v %v", r, string(s))
 			}
-			err = fmt.Errorf("recovered from panic: %v %v", r, string(s))
 		}
 	}()
 
@@ -125,7 +164,7 @@ func (it *Interpreter) Run(tmpl string) (result interface{}, counter int64, err 
 		return nil, 0, err
 	}
 
-	v, err := c.exec(it)
+	v, err := exec(c, it)
 	if err != nil {
 		return nil, 0, err
 	}

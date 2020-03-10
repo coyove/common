@@ -41,12 +41,37 @@ func New(onMissing func(k string) (interface{}, error)) *Interpreter {
 			return nil, fmt.Errorf("not found")
 		},
 	}
-	it.Install("^", "concat two strings", func(a, b string) (string, error) { return a + b, nil })
-	it.Install("+", "add two integer numbers", func(a, b int64) (int64, error) { return a + b, nil })
-	it.Install("-", "subtract two integer numbers", func(a, b int64) (int64, error) { return a - b, nil })
-	it.Install("*", "", func(a, b int64) (int64, error) { return a * b, nil })
-	it.Install("/", "", func(a, b int64) (int64, error) { return a / b, nil })
-	it.Install("%", "", func(a, b int64) (int64, error) { return a % b, nil })
+
+	less := func(a, b interface{}) bool {
+		switch a.(type) {
+		case int64:
+			return a.(int64) < b.(int64)
+		case float64:
+			return a.(float64) < b.(float64)
+		case string:
+			return a.(string) < b.(string)
+		case uint64:
+			return a.(uint64) < b.(uint64)
+		default:
+			panic(fmt.Errorf("%v and %v are no comparable", a, b))
+		}
+	}
+
+	it.Install("not", "", func(a bool) bool { return !a })
+	it.Install("=", "", func(a, b interface{}) bool { return a == b })
+	it.Install("==", "", func(a, b interface{}) bool { return a == b })
+	it.Install("!=", "", func(a, b interface{}) bool { return a != b })
+	it.Install("<>", "", func(a, b interface{}) bool { return a != b })
+	it.Install("^", "concat two strings", func(a, b string) string { return a + b })
+	it.Install("+", "add two integer numbers", func(a, b int64) int64 { return a + b })
+	it.Install("-", "subtract two integer numbers", func(a, b int64) int64 { return a - b })
+	it.Install("*", "", func(a, b int64) int64 { return a * b })
+	it.Install("/", "", func(a, b int64) int64 { return a / b })
+	it.Install("%", "", func(a, b int64) int64 { return a % b })
+	it.Install(">", "", func(a, b int64) (bool, error) { return !less(a, b) && a != b, nil })
+	it.Install(">=", "", func(a, b int64) (bool, error) { return !less(a, b), nil })
+	it.Install("<", "", func(a, b interface{}) (bool, error) { return less(a, b), nil })
+	it.Install("<=", "", func(a, b int64) (bool, error) { return less(a, b) || a == b, nil })
 	it.Install("+.", "add two float numbers", func(a, b float64) (float64, error) { return a + b, nil })
 	it.Install("-.", "subtract two float numbers", func(a, b float64) (float64, error) { return a - b, nil })
 	it.Install("*.", "", func(a, b float64) (float64, error) { return a * b, nil })
