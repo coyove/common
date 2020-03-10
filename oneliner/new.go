@@ -3,6 +3,7 @@ package oneliner
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"reflect"
 	"strconv"
@@ -16,6 +17,30 @@ type Interpreter struct {
 	counter   int64
 	history   sync.Map
 	Sloppy    bool
+}
+
+var errorInterface = reflect.TypeOf((*error)(nil)).Elem()
+
+func (it *Interpreter) Install(name, doc string, f interface{}) {
+	rf := reflect.ValueOf(f)
+	t := rf.Type()
+
+	if t.NumOut() > 2 {
+		panic("function should return at most 2 values")
+	} else if t.NumOut() == 2 && !t.Out(1).Implements(errorInterface) {
+		panic("function should return 2 values: (value, error)")
+	}
+
+	it.fn[name] = &Func{
+		nargs:  t.NumIn(),
+		f:      rf,
+		name:   name,
+		error1: t.NumOut() == 1 && t.Out(0).Implements(errorInterface),
+	}
+
+	if doc != "" {
+		it.fn[name].comment = " - " + doc
+	}
 }
 
 func New(onMissing func(k string) (interface{}, error)) *Interpreter {
@@ -68,10 +93,10 @@ func New(onMissing func(k string) (interface{}, error)) *Interpreter {
 	it.Install("*", "", func(a, b int64) int64 { return a * b })
 	it.Install("/", "", func(a, b int64) int64 { return a / b })
 	it.Install("%", "", func(a, b int64) int64 { return a % b })
-	it.Install(">", "", func(a, b int64) (bool, error) { return !less(a, b) && a != b, nil })
-	it.Install(">=", "", func(a, b int64) (bool, error) { return !less(a, b), nil })
-	it.Install("<", "", func(a, b interface{}) (bool, error) { return less(a, b), nil })
-	it.Install("<=", "", func(a, b int64) (bool, error) { return less(a, b) || a == b, nil })
+	it.Install(">", "", func(a, b interface{}) bool { return !less(a, b) && a != b })
+	it.Install(">=", "", func(a, b interface{}) bool { return !less(a, b) })
+	it.Install("<", "", func(a, b interface{}) bool { return less(a, b) })
+	it.Install("<=", "", func(a, b interface{}) bool { return less(a, b) || a == b })
 	it.Install("+.", "add two float numbers", func(a, b float64) (float64, error) { return a + b, nil })
 	it.Install("-.", "subtract two float numbers", func(a, b float64) (float64, error) { return a - b, nil })
 	it.Install("*.", "", func(a, b float64) (float64, error) { return a * b, nil })
@@ -82,6 +107,15 @@ func New(onMissing func(k string) (interface{}, error)) *Interpreter {
 		buf, err := json.MarshalIndent(a, "", "  ")
 		return string(buf), err
 	})
+	it.Install("write-file", "", func(fn string, a interface{}) error {
+		buf, _ := json.MarshalIndent(a, "", "  ")
+		return ioutil.WriteFile(fn, buf, 0777)
+	})
+	it.Install("read-file", "", func(fn string) (string, error) {
+		buf, err := ioutil.ReadFile(fn)
+		return string(buf), err
+	})
+
 	it.Install("map-keys", "", func(a interface{}) ([]interface{}, error) {
 		keys := reflect.ValueOf(a).MapKeys()
 		ret := make([]interface{}, len(keys))

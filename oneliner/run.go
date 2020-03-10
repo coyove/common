@@ -19,24 +19,6 @@ type Func struct {
 	error1        bool
 }
 
-var errorInterface = reflect.TypeOf((*error)(nil)).Elem()
-
-func (it *Interpreter) Install(name, doc string, f interface{}, comment ...string) {
-	rf := reflect.ValueOf(f)
-	if rf.Type().NumOut() == 2 && !rf.Type().Out(1).Implements(errorInterface) {
-		panic("function should return 2 values: (value, error)")
-	}
-	it.fn[name] = &Func{
-		nargs:  rf.Type().NumIn(),
-		f:      rf,
-		name:   name,
-		error1: rf.Type().NumOut() == 1 && rf.Type().Out(0).Implements(errorInterface),
-	}
-	if doc != "" {
-		it.fn[name].comment = " - " + doc
-	}
-}
-
 type (
 	_atom     string
 	_compound []interface{}
