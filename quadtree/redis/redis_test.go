@@ -11,14 +11,14 @@ import (
 )
 
 func TestSimpleRedis(t *testing.T) {
-	SimpleInit("devbox0:6379")
+	rc := New("devbox0:6379")
 	quadtree.MaxElems = 2
 	rand.Seed(time.Now().Unix())
-	_tr, _ := quadtree.NewQuadTree(quadtree.Pt(-180, 90), quadtree.Pt(180, -90), func(t *quadtree.QuadTree) {
+	_tr, _ := quadtree.NewQuadTree(rc, quadtree.Pt(-180, 90), quadtree.Pt(180, -90), func(t *quadtree.QuadTree) {
 		t.MinBox = 3
 	})
 	tr := func() quadtree.QuadTree {
-		tr, _ := quadtree.Load(_tr.ID)
+		tr, _ := _tr.LoadTree(_tr.ID)
 		return tr
 	}
 
@@ -38,7 +38,7 @@ func TestSimpleRedis(t *testing.T) {
 	start := time.Now()
 	m := map[quadtree.Point]interface{}{}
 	allpoints := []quadtree.Point{}
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 20; i++ {
 		p := randPoint()
 		m[p] = i
 		tr().Put(p, itob(i))

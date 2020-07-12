@@ -121,7 +121,7 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 			return err
 		}
 		if existed {
-			t, err := t.load(t.ID) // reload
+			t, err := t.LoadTree(t.ID) // reload
 			if err != nil {
 				return err
 			}
@@ -129,7 +129,7 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 		}
 		return nil
 	}
-	t, err := t.load(t.O[i])
+	t, err := t.LoadTree(t.O[i])
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 	if buf != nil {
 		buf.WriteByte(byte(i))
 	}
-	t, err := t.load(t.O[i])
+	t, err := t.LoadTree(t.O[i])
 	if err != nil {
 		return Element{}, "", err
 	}
@@ -180,7 +180,7 @@ func (t QuadTree) Iterate(cb func(Element) error) error {
 	} else {
 		for _, o := range t.O {
 			if o != "" {
-				ot, err := t.load(o)
+				ot, err := t.LoadTree(o)
 				if err != nil {
 					return err
 				}
@@ -200,7 +200,7 @@ func (t QuadTree) MaxDepth() (depth int, leaves int, err error) {
 	}
 	for _, o := range t.O {
 		if o != "" {
-			ot, err := t.load(o)
+			ot, err := t.LoadTree(o)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -237,7 +237,7 @@ func (t QuadTree) str(ident int, locode string) string {
 				p.WriteString(strconv.Itoa(i))
 				p.WriteString(":\n")
 
-				ot, err := t.load(o)
+				ot, err := t.LoadTree(o)
 				if err != nil {
 					p.WriteString(prefix)
 					p.WriteString("  error: ")
@@ -253,7 +253,7 @@ func (t QuadTree) str(ident int, locode string) string {
 
 func (t QuadTree) isleaf() bool { return len(t.O[0])+len(t.O[1])+len(t.O[2])+len(t.O[3]) == 0 }
 
-func (t QuadTree) load(id string) (QuadTree, error) {
+func (t QuadTree) LoadTree(id string) (QuadTree, error) {
 	lt, err := t.mgr.Load(id)
 	lt.mgr = t.mgr
 	return lt, err

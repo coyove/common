@@ -15,7 +15,7 @@ func TestQuadTree(t *testing.T) {
 		t.MinBox = 3
 	})
 	tr := func() QuadTree {
-		tr, _ := _tr.load(_tr.ID)
+		tr, _ := _tr.LoadTree(_tr.ID)
 		return tr
 	}
 
@@ -72,7 +72,7 @@ func TestQuadTreeConcurrent(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 	_tr, _ := NewQuadTree(NewMemoryDatabase(), Pt(-10, 10), Pt(10, -10), nil)
 	tr := func() QuadTree {
-		tr, _ := _tr.load(_tr.ID)
+		tr, _ := _tr.LoadTree(_tr.ID)
 		return tr
 	}
 
@@ -134,7 +134,7 @@ func TestQuadTreeNeigSimple(t *testing.T) {
 		t.MinBox = 0.5
 	})
 	tr := func() QuadTree {
-		tr, _ := _tr.load(_tr.ID)
+		tr, _ := _tr.LoadTree(_tr.ID)
 		return tr
 	}
 	tr().Put(Pt(1, 1), itob(1))
