@@ -5,83 +5,16 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var (
-	directions      = []string{"u", "d", "l", "r", "ul", "ur", "dl", "dr"}
-	memStorage      = map[string]map[string][]byte{}
-	memStorageElems = map[string]map[Point]Element{}
-	memStoragemu    = sync.Mutex{}
-
+	directions  = []string{"u", "d", "l", "r", "ul", "ur", "dl", "dr"}
 	MaxElems    = 8
 	ErrNotFound = fmt.Errorf("not found")
-	Load        = func(id string) (QuadTree, error) {
-		memStoragemu.Lock()
-		h := memStorage[id]
-		memStoragemu.Unlock()
-		if h == nil {
-			return QuadTree{}, ErrNotFound
-		}
-		t := QuadTree{}
-		if err := json.Unmarshal(h["t"], &t); err != nil {
-			return QuadTree{}, err
-		}
-		t.O[0], t.O[1], t.O[2], t.O[3] = string(h["0"]), string(h["1"]), string(h["2"]), string(h["3"])
-		memStoragemu.Lock()
-		t.Elems = memStorageElems[id]
-		memStoragemu.Unlock()
-		return t, nil
-	}
-	Store = func(t QuadTree) error {
-		buf, _ := json.Marshal(t)
-		memStoragemu.Lock()
-		memStorage[t.ID] = map[string][]byte{"t": buf}
-		memStoragemu.Unlock()
-		return nil
-	}
-	StoreElement = func(id string, e Element) error {
-		memStoragemu.Lock()
-		m := memStorageElems[id]
-		if m == nil {
-			m = map[Point]Element{}
-			memStorageElems[id] = m
-		}
-		m[e.Point] = e
-		memStoragemu.Unlock()
-		return nil
-	}
-	DeleteAllElements = func(id string) error {
-		memStoragemu.Lock()
-		delete(memStorageElems, id)
-		memStoragemu.Unlock()
-		return nil
-	}
-	DeleteElement = func(id string, e Element) error {
-		memStoragemu.Lock()
-		m := memStorageElems[id]
-		delete(m, e.Point)
-		memStoragemu.Unlock()
-		return nil
-	}
-	StoreOrthant = func(id string, o int, oid string) (existed bool, err error) {
-		memStoragemu.Lock()
-		defer memStoragemu.Unlock()
-		m := memStorage[id]
-		if m == nil {
-			return false, ErrNotFound
-		}
-		if _, exist := m[strconv.Itoa(o)]; exist {
-			return true, nil
-		}
-		m[strconv.Itoa(o)] = []byte(oid)
-		return false, nil
-	}
 )
 
 type Element struct {
@@ -108,16 +41,17 @@ type QuadTree struct {
 	MinBox float64
 	O      [4]string         `json:"-"` // stored as "0", "1", "2" and "3"
 	Elems  map[Point]Element `json:"-"` // stored as a hashmap: Point -> Element
+	mgr    Database
 }
 
-func NewQuadTree(tl, br Point, fill func(t *QuadTree)) (QuadTree, error) {
+func NewQuadTree(mgr Database, tl, br Point, fill func(t *QuadTree)) (QuadTree, error) {
 	var id [12]byte
 	rand.Read(id[:])
-	t := QuadTree{ID: base64.URLEncoding.EncodeToString(id[:]), AABB: [2]Point{tl, br}}
+	t := QuadTree{ID: base64.URLEncoding.EncodeToString(id[:]), AABB: [2]Point{tl, br}, mgr: mgr}
 	if fill != nil {
 		fill(&t)
 	}
-	return t, Store(t)
+	return t, mgr.Store(t)
 }
 
 func (t QuadTree) insideOrth(p Point) (orthantIndex int, topLeft, bottomRight Point) { // returns 0-3
@@ -143,12 +77,12 @@ func (t QuadTree) Put(p Point, v []byte) error {
 	if t.isleaf() {
 		if len(t.Elems) < MaxElems {
 			// Have spare room
-			return StoreElement(t.ID, Element{p, v})
+			return t.mgr.StoreElement(t.ID, Element{p, v})
 		}
 
 		if size := t.AABB[0].Sub(t.AABB[1]); math.Abs(size.X())/2 < t.MinBox || math.Abs(size.Y())/2 < t.MinBox {
 			// Cannot split anymore
-			return StoreElement(t.ID, Element{p, v})
+			return t.mgr.StoreElement(t.ID, Element{p, v})
 		}
 
 		// Split node
@@ -158,7 +92,7 @@ func (t QuadTree) Put(p Point, v []byte) error {
 			}
 		}
 
-		if err := DeleteAllElements(t.ID); err != nil {
+		if err := t.mgr.DeleteAllElements(t.ID); err != nil {
 			return err
 		}
 	}
@@ -172,22 +106,22 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 
 	i, iul, idr := t.insideOrth(p)
 	if t.O[i] == "" {
-		tr, err := NewQuadTree(iul, idr, func(nt *QuadTree) {
+		tr, err := NewQuadTree(t.mgr, iul, idr, func(nt *QuadTree) {
 			nt.MinBox = t.MinBox
 			nt.Parent = t.ID
 		})
 		if err != nil {
 			return err
 		}
-		if err := StoreElement(tr.ID, Element{p, v}); err != nil {
+		if err := t.mgr.StoreElement(tr.ID, Element{p, v}); err != nil {
 			return err
 		}
-		existed, err := StoreOrthant(t.ID, i, tr.ID)
+		existed, err := t.mgr.StoreOrthant(t.ID, i, tr.ID)
 		if err != nil {
 			return err
 		}
 		if existed {
-			t, err := Load(t.ID) // reload
+			t, err := t.load(t.ID) // reload
 			if err != nil {
 				return err
 			}
@@ -195,7 +129,7 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 		}
 		return nil
 	}
-	t, err := Load(t.O[i])
+	t, err := t.load(t.O[i])
 	if err != nil {
 		return err
 	}
@@ -212,7 +146,7 @@ func (t QuadTree) Remove(p Point) (Element, error) {
 	if err != nil {
 		return e, err
 	}
-	return e, DeleteElement(tid, e)
+	return e, t.mgr.DeleteElement(tid, e)
 }
 
 func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
@@ -229,7 +163,7 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 	if buf != nil {
 		buf.WriteByte(byte(i))
 	}
-	t, err := Load(t.O[i])
+	t, err := t.load(t.O[i])
 	if err != nil {
 		return Element{}, "", err
 	}
@@ -246,7 +180,7 @@ func (t QuadTree) Iterate(cb func(Element) error) error {
 	} else {
 		for _, o := range t.O {
 			if o != "" {
-				ot, err := Load(o)
+				ot, err := t.load(o)
 				if err != nil {
 					return err
 				}
@@ -266,7 +200,7 @@ func (t QuadTree) MaxDepth() (depth int, leaves int, err error) {
 	}
 	for _, o := range t.O {
 		if o != "" {
-			ot, err := Load(o)
+			ot, err := t.load(o)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -303,7 +237,7 @@ func (t QuadTree) str(ident int, locode string) string {
 				p.WriteString(strconv.Itoa(i))
 				p.WriteString(":\n")
 
-				ot, err := Load(o)
+				ot, err := t.load(o)
 				if err != nil {
 					p.WriteString(prefix)
 					p.WriteString("  error: ")
@@ -318,3 +252,9 @@ func (t QuadTree) str(ident int, locode string) string {
 }
 
 func (t QuadTree) isleaf() bool { return len(t.O[0])+len(t.O[1])+len(t.O[2])+len(t.O[3]) == 0 }
+
+func (t QuadTree) load(id string) (QuadTree, error) {
+	lt, err := t.mgr.Load(id)
+	lt.mgr = t.mgr
+	return lt, err
+}

@@ -60,7 +60,7 @@ func (t QuadTree) getByCode(locode []byte) (interface{}, error) {
 		if o == "" {
 			return nil, nil
 		}
-		t, err = Load(o)
+		t, err = t.load(o)
 		if err != nil {
 			return nil, err
 		}
