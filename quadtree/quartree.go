@@ -12,9 +12,8 @@ import (
 )
 
 var (
-	directions  = []string{"u", "d", "l", "r", "ul", "ur", "dl", "dr"}
-	MaxElems    = 8
-	ErrNotFound = fmt.Errorf("not found")
+	directions = []string{"u", "d", "l", "r", "ul", "ur", "dl", "dr"}
+	MaxElems   = 8
 )
 
 type Element struct {
@@ -158,7 +157,7 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 	i, _, _ := t.insideOrth(p)
 	// fmt.Println(p, t.Pos, i, t.O)
 	if t.O[i] == "" {
-		return Element{}, t.ID, ErrNotFound
+		return Element{}, t.ID, fmt.Errorf("%v not found", p)
 	}
 	if buf != nil {
 		buf.WriteByte(byte(i))
@@ -173,6 +172,10 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 func (t QuadTree) Iterate(cb func(Element) error) error {
 	if t.isleaf() {
 		for _, e := range t.Elems {
+			if x, y, tl, br := e.Point.X(), e.Point.Y(), t.AABB[0], t.AABB[1]; !(x >= tl.X() && x <= br.X() &&
+				y >= br.Y() && y <= tl.Y()) {
+				return fmt.Errorf("invalid point outside quadrant: p=%v, aabb=%v-%v", e.Point, tl, br)
+			}
 			if err := cb(e); err != nil {
 				return err
 			}

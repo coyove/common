@@ -22,9 +22,6 @@ type Database struct {
 
 func (db *Database) Load(id string) (quadtree.QuadTree, error) {
 	h, err := db.i.HGetAll(id)
-	if h == nil {
-		return quadtree.QuadTree{}, quadtree.ErrNotFound
-	}
 	if err != nil {
 		return quadtree.QuadTree{}, err
 	}
@@ -73,6 +70,10 @@ func (db *Database) StoreOrthant(id string, o int, oid string) (existed bool, er
 }
 
 func New(redisInstance interface{}) *Database {
+	i, ok := redisInstance.(Implement)
+	if ok {
+		return &Database{i: i}
+	}
 	c, ok := redisInstance.(*redis.Pool)
 	if !ok {
 		c = redis.NewPool(func() (redis.Conn, error) {

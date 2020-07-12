@@ -127,6 +127,15 @@ func TestQuadTreeConcurrent(t *testing.T) {
 	rp := allpoints[rand.Intn(len(allpoints))]
 	fmt.Print("rand point=", rp, " neigbours=")
 	fmt.Println(tr().FindNeig(rp, nil))
+
+	dedup := map[Point]bool{}
+	fmt.Println("iterate result:", tr().Iterate(func(e Element) error {
+		if dedup[e.Point] {
+			t.Fatal("dedup", e.Point)
+		}
+		dedup[e.Point] = true
+		return nil
+	}))
 }
 
 func TestQuadTreeNeigSimple(t *testing.T) {

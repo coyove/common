@@ -3,6 +3,7 @@ package redis_adapter
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestSimpleRedis(t *testing.T) {
-	rc := New("devbox0:6379")
+	rc := New(os.Getenv("QT"))
 	quadtree.MaxElems = 2
 	rand.Seed(time.Now().Unix())
 	_tr, _ := quadtree.NewQuadTree(rc, quadtree.Pt(-180, 90), quadtree.Pt(180, -90), func(t *quadtree.QuadTree) {

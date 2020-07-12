@@ -2,6 +2,7 @@ package quadtree
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync"
 )
@@ -33,7 +34,7 @@ func (m *MemoryDatabase) Load(id string) (QuadTree, error) {
 	h := m.m[id]
 	m.Unlock()
 	if h == nil {
-		return QuadTree{}, ErrNotFound
+		return QuadTree{}, fmt.Errorf("%q not found", id)
 	}
 	t := QuadTree{}
 	if err := json.Unmarshal(h["t"], &t); err != nil {
@@ -86,7 +87,7 @@ func (m *MemoryDatabase) StoreOrthant(id string, o int, oid string) (existed boo
 	defer m.Unlock()
 	h := m.m[id]
 	if m == nil {
-		return false, ErrNotFound
+		return false, fmt.Errorf("store %q orthant #%d: not found", id, o)
 	}
 	if _, exist := h[strconv.Itoa(o)]; exist {
 		return true, nil
