@@ -261,3 +261,8 @@ func (t QuadTree) LoadTree(id string) (QuadTree, error) {
 	lt.mgr = t.mgr
 	return lt, err
 }
+
+func (t QuadTree) SetDataSource(mgr Database) QuadTree {
+	t.mgr = mgr
+	return t
+}
