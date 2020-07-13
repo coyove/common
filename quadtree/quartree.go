@@ -53,23 +53,23 @@ func NewQuadTree(mgr Database, tl, br Point, fill func(t *QuadTree)) (QuadTree, 
 	return t, mgr.Store(t)
 }
 
-func (t QuadTree) insideOrth(p Point) (orthantIndex int, topLeft, bottomRight Point) { // returns 0-3
+func (t QuadTree) insideOrth(p Point) (orthantIndex int, topLeft, bottomRight Point, err error) { // returns 0-3
 	tl, br := t.AABB[0], t.AABB[1]
 	if p.X() > br.X() || p.X() < tl.X() {
-		panic("x outside")
+		return 0, Point{}, Point{}, fmt.Errorf("x outside")
 	} else if p.Y() > tl.Y() || p.Y() < br.Y() {
-		panic("y outside")
+		return 0, Point{}, Point{}, fmt.Errorf("y outside")
 	}
 
 	center := Pt((tl.X()+br.X())/2, (tl.Y()+br.Y())/2)
 	if p.X() >= center.X() && p.Y() > center.Y() {
-		return 0, Pt(center.X(), tl.Y()), Pt(br.X(), center.Y())
+		return 0, Pt(center.X(), tl.Y()), Pt(br.X(), center.Y()), nil
 	} else if p.X() < center.X() && p.Y() >= center.Y() {
-		return 1, tl, center
+		return 1, tl, center, nil
 	} else if p.X() <= center.X() && p.Y() < center.Y() {
-		return 2, Pt(tl.X(), center.Y()), Pt(center.X(), br.Y())
+		return 2, Pt(tl.X(), center.Y()), Pt(center.X(), br.Y()), nil
 	}
-	return 3, center, br // center itself will be inside 3
+	return 3, center, br, nil // center itself will be inside 3
 }
 
 func (t QuadTree) Put(p Point, v []byte) error {
@@ -103,7 +103,11 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 		return nil
 	}
 
-	i, iul, idr := t.insideOrth(p)
+	i, iul, idr, err := t.insideOrth(p)
+	if err != nil {
+		return err
+	}
+
 	if t.O[i] == "" {
 		tr, err := NewQuadTree(t.mgr, iul, idr, func(nt *QuadTree) {
 			nt.MinBox = t.MinBox
@@ -128,7 +132,7 @@ func (t QuadTree) calcPutOrth(p Point, v []byte) error {
 		}
 		return nil
 	}
-	t, err := t.LoadTree(t.O[i])
+	t, err = t.LoadTree(t.O[i])
 	if err != nil {
 		return err
 	}
@@ -154,7 +158,10 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 			return e, t.ID, nil
 		}
 	}
-	i, _, _ := t.insideOrth(p)
+	i, _, _, err := t.insideOrth(p)
+	if err != nil {
+		return Element{}, "", err
+	}
 	// fmt.Println(p, t.Pos, i, t.O)
 	if t.O[i] == "" {
 		return Element{}, t.ID, fmt.Errorf("%v not found", p)
@@ -162,7 +169,7 @@ func (t QuadTree) find(buf *bytes.Buffer, p Point) (Element, string, error) {
 	if buf != nil {
 		buf.WriteByte(byte(i))
 	}
-	t, err := t.LoadTree(t.O[i])
+	t, err = t.LoadTree(t.O[i])
 	if err != nil {
 		return Element{}, "", err
 	}
