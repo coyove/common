@@ -57,7 +57,7 @@ func (db *Database) Store(t quadtree.QuadTree) error {
 func (db *Database) StoreElement(id string, e quadtree.Element) error {
 	buf := &bytes.Buffer{}
 	gob.NewEncoder(buf).Encode(e)
-	return db.i.HSet(id+"elems", e.Point.String(), buf.Bytes())
+	return db.i.HSet(id+"elems", e.Point.Marshal(), buf.Bytes())
 }
 
 func (db *Database) DeleteAllElements(id string) error {
@@ -65,7 +65,7 @@ func (db *Database) DeleteAllElements(id string) error {
 }
 
 func (db *Database) DeleteElement(id string, e quadtree.Element) error {
-	return db.i.HDel(id+"elems", e.Point.String())
+	return db.i.HDel(id+"elems", e.Point.Marshal())
 }
 
 func (db *Database) StoreOrthant(id string, o int, oid string) (existed bool, err error) {

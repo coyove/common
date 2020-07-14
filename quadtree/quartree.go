@@ -31,6 +31,7 @@ func (p Point) Y() float64                { return math.Float64frombits(^p.Iy) }
 func (p Point) Sub(p2 Point) Point        { return Pt(p.X()-p2.X(), p.Y()-p2.Y()) }
 func (p Point) Distance(p2 Point) float64 { p = p.Sub(p2); return math.Sqrt(p.X()*p.X() + p.Y()*p.Y()) }
 func (p Point) String() string            { return fmt.Sprintf("(%.2f,%.2f)", p.X(), p.Y()) }
+func (p Point) Marshal() string           { return fmt.Sprintf("%016x%016x", p.Ix, p.Iy) }
 func (e Element) String() string          { return fmt.Sprintf("<%q-%v>", e.Data, e.Point) }
 
 type QuadTree struct {

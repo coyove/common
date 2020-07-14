@@ -78,9 +78,15 @@ func (t QuadTree) FindNeig(src Point, distance func(p Point) float64) ([]Element
 	buf := &bytes.Buffer{}
 	cands := map[Point]Element{}
 
-	e, _, _ := t.find(buf, src)
-	if e.Point != src {
-		cands[e.Point] = e
+	_, tid, _ := t.find(buf, src)
+	pt, err := t.LoadTree(tid)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range pt.Elems {
+		if e.Point != src {
+			cands[e.Point] = e
+		}
 	}
 
 	x, tmp := buf.Bytes(), make([]byte, buf.Len()*8)
