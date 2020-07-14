@@ -59,6 +59,8 @@ func (t QuadTree) insideOrth(p Point) (orthantIndex int, topLeft, bottomRight Po
 		return 0, Point{}, Point{}, fmt.Errorf("x outside")
 	} else if p.Y() > tl.Y() || p.Y() < br.Y() {
 		return 0, Point{}, Point{}, fmt.Errorf("y outside")
+	} else if tl == (Point{}) || br == (Point{}) {
+		return 0, Point{}, Point{}, fmt.Errorf("invalid AABB box")
 	}
 
 	center := Pt((tl.X()+br.X())/2, (tl.Y()+br.Y())/2)

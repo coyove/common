@@ -1,7 +1,8 @@
 package redis_adapter
 
 import (
-	"encoding/json"
+	"bytes"
+	"encoding/gob"
 	"strconv"
 
 	"github.com/coyove/common/quadtree"
@@ -26,7 +27,7 @@ func (db *Database) Load(id string) (quadtree.QuadTree, error) {
 		return quadtree.QuadTree{}, err
 	}
 	t := quadtree.QuadTree{}
-	if err := json.Unmarshal(h["t"], &t); err != nil {
+	if err := gob.NewDecoder(bytes.NewReader(h["t"])).Decode(&t); err != nil {
 		return quadtree.QuadTree{}, err
 	}
 	t.O[0], t.O[1], t.O[2], t.O[3] = string(h["0"]), string(h["1"]), string(h["2"]), string(h["3"])
@@ -39,7 +40,7 @@ func (db *Database) Load(id string) (quadtree.QuadTree, error) {
 	t.Elems = map[quadtree.Point]quadtree.Element{}
 	for _, buf := range el {
 		var e quadtree.Element
-		if err := json.Unmarshal(buf, &e); err != nil {
+		if err := gob.NewDecoder(bytes.NewReader(buf)).Decode(&e); err != nil {
 			return quadtree.QuadTree{}, err
 		}
 		t.Elems[e.Point] = e
@@ -48,13 +49,15 @@ func (db *Database) Load(id string) (quadtree.QuadTree, error) {
 }
 
 func (db *Database) Store(t quadtree.QuadTree) error {
-	buf, _ := json.Marshal(t)
-	return db.i.HSet(t.ID, "t", buf)
+	buf := &bytes.Buffer{}
+	gob.NewEncoder(buf).Encode(t)
+	return db.i.HSet(t.ID, "t", buf.Bytes())
 }
 
 func (db *Database) StoreElement(id string, e quadtree.Element) error {
-	buf, _ := json.Marshal(e)
-	return db.i.HSet(id+"elems", e.Point.String(), buf)
+	buf := &bytes.Buffer{}
+	gob.NewEncoder(buf).Encode(e)
+	return db.i.HSet(id+"elems", e.Point.String(), buf.Bytes())
 }
 
 func (db *Database) DeleteAllElements(id string) error {
