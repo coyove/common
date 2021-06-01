@@ -1,4 +1,4 @@
-package common
+package coward
 
 import (
 	"flag"
