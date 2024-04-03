@@ -1,157 +1,132 @@
 package sched
 
 import (
-	"log"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
-	//sync "github.com/sasha-s/go-deadlock"
+	_ "unsafe"
 )
 
-var Verbose = true
+//go:linkname runtimeNano runtime.nanotime
+func runtimeNano() int64
 
-type notifier struct {
-	deadline int64
-	callback func()
+var taskCanceled = new(int)
+
+type timer struct {
+	real  *time.Timer
+	lock  int32
+	dead  int32
+	tasks []any
 }
 
-var timeoutWheel struct {
-	secmin [60][60]struct {
-		sync.Mutex
-		counter uint64
-		list    map[SchedKey]notifier
+func (t *timer) spinlock() {
+	for !atomic.CompareAndSwapInt32(&t.lock, 0, 1) {
+		if atomic.LoadInt32(&t.dead) == 1 {
+			return
+		}
+		runtime.Gosched()
 	}
-	maxsyncfires int
 }
 
-func init() {
-	go func() {
-		for t := range time.Tick(time.Second) {
-			s, m, now := t.Second(), t.Minute(), t.Unix()
+func (t *timer) spinunlock() {
+	atomic.StoreInt32(&t.lock, 0)
+}
 
-			syncNotifiers := make([]notifier, 0, 16)
+type shard struct {
+	timers sync.Map
+	mgr    *Group
+}
 
-			for i := 0; i < 2; i++ {
-				ts := &timeoutWheel.secmin[s][m]
-				ts.Lock()
-				for k, n := range ts.list {
-					if n.deadline/1e9 > now {
-						continue
+func (m *shard) start(d time.Duration, data any) Key {
+	nano := time.Duration(runtimeNano())
+	now := nano / time.Second
+	at := (nano + d) / time.Second
+	if at == now {
+		go m.mgr.wakeup([]any{data})
+		return Key{}
+	}
+
+	v, loaded := m.timers.LoadOrStore(at, &timer{lock: 1})
+	t := v.(*timer)
+	if !loaded {
+		// runtime.SetFinalizer(t, func(t *timer) {
+		// 	atomic.StoreInt32(&t.dead, 1)
+		// })
+		t.real = time.AfterFunc(d, func() {
+			t.spinlock()
+			defer func() {
+				atomic.StoreInt32(&t.dead, 1)
+				t.spinunlock()
+				m.timers.Delete(at)
+			}()
+			end := len(t.tasks) - 1
+			for i := 0; i <= end; i++ {
+				if t.tasks[i] == taskCanceled {
+					for ; end >= i; end-- {
+						if t.tasks[end] != taskCanceled {
+							t.tasks[end], t.tasks[i] = t.tasks[i], t.tasks[end]
+							break
+						}
 					}
-
-					delete(ts.list, k)
-					syncNotifiers = append(syncNotifiers, n)
 				}
-				if len(ts.list) == 0 {
-					ts.list = nil
-				}
-				ts.Unlock()
-
-				// Dial back 1 second to check if any callbacks which should time out at "this second"
-				// are added to the "previous second" because of clock precision
-				t = time.Unix(now-1, 0)
-				s, m = t.Second(), t.Minute()
 			}
-
-			for _, n := range syncNotifiers {
-				n.callback()
+			tt := t.tasks[:end+1]
+			if len(tt) > 0 {
+				m.mgr.wakeup(tt)
 			}
-
-			if len(syncNotifiers) > timeoutWheel.maxsyncfires {
-				timeoutWheel.maxsyncfires = len(syncNotifiers)
-			}
-
-			if Verbose {
-				log.Println("fires:", len(syncNotifiers), "max:", timeoutWheel.maxsyncfires)
-			}
-		}
-	}()
+		})
+	} else {
+		t.spinlock()
+	}
+	i := len(t.tasks)
+	t.tasks = append(t.tasks, data)
+	t.spinunlock()
+	return Key{tm: t, index: i}
 }
 
-type SchedKey uint64
-
-func Schedule(callback func(), deadlineOrTimeout interface{}) SchedKey {
-	deadline := time.Now()
-	now := deadline.Unix()
-
-	switch d := deadlineOrTimeout.(type) {
-	case time.Time:
-		deadline = d
-	case time.Duration:
-		deadline = deadline.Add(d)
-	default:
-		panic("invalid deadline(time.Time) or timeout(time.Duration) value")
-	}
-
-	dead := deadline.Unix()
-
-	if now > dead {
-		// timed out already
-		return 0
-	} else if now == dead {
-		callback()
-		return 0
-	}
-
-	s, m := deadline.Second(), deadline.Minute()
-	ts := &timeoutWheel.secmin[s][m]
-	ts.Lock()
-
-	ts.counter++
-
-	// sec (6bit) | min (6bit) | counter (52bit)
-	// key will never be 0
-	key := SchedKey(uint64(s+1)<<58 | uint64(m+1)<<52 | (ts.counter & 0xfffffffffffff))
-
-	if ts.list == nil {
-		ts.list = map[SchedKey]notifier{}
-	}
-
-	ts.list[key] = notifier{
-		deadline: deadline.UnixNano(),
-		callback: callback,
-	}
-
-	ts.Unlock()
-	return key
+type Key struct {
+	tm    *timer
+	index int
 }
 
-func (key SchedKey) Cancel() (oldcallback func()) {
-	s := int(key>>58) - 1
-	m := int(key<<6>>58) - 1
-	if s < 0 || s > 59 || m < 0 || m > 59 {
-		return
-	}
-	ts := &timeoutWheel.secmin[s][m]
-	ts.Lock()
-	if ts.list != nil {
-		if n, ok := ts.list[key]; ok {
-			oldcallback = n.callback
-		}
-		delete(ts.list, key)
-	}
-	ts.Unlock()
-	return
+type Group struct {
+	shards   []shard
+	shardCtr atomic.Int64
+	wakeup   func([]any)
 }
 
-// If callback is nil, the old one will be reused
-func (key *SchedKey) Reschedule(callback func(), deadlineOrTimeout interface{}) {
-RETRY:
-	old := atomic.LoadUint64((*uint64)(key))
-	f := SchedKey(old).Cancel()
-	if f == nil && callback == nil {
-		// The key has already been canceled, there is no way to reschedule it
-		// if no valid callback is provided
-		return
+// NewGroup creates a schedule group, where payloads can be queued and fired at specific
+// time, use wakeup function to handle fired payloads.
+func NewGroup(wakeup func([]any)) *Group {
+	m := &Group{
+		shards: make([]shard, runtime.NumCPU()),
+		wakeup: wakeup,
 	}
-	if callback == nil {
-		callback = f
+	for i := range m.shards {
+		m.shards[i].mgr = m
 	}
-	n := Schedule(callback, deadlineOrTimeout)
-	if atomic.CompareAndSwapUint64((*uint64)(key), old, uint64(n)) {
-		return
-	}
+	return m
+}
 
-	n.Cancel()
-	goto RETRY
+// Schedule schedules the payload to be fired after d, which is counted in seconds.
+// If d is less than a second, the payload will be fired immediately.
+func (m *Group) Schedule(d time.Duration, payload any) Key {
+	mgr := &m.shards[m.shardCtr.Add(1)%int64(runtime.NumCPU())]
+	return mgr.start(d, payload)
+}
+
+// Cancel cancels the payload associated with the key anyway, which may be fired or not.
+// The caller should implement its own coordinate logic if this matters.
+func (m *Group) Cancel(key Key) {
+	if key.tm == nil {
+		return
+	}
+	t := key.tm
+	t.spinlock()
+	defer t.spinunlock()
+	if atomic.LoadInt32(&t.dead) == 1 {
+		return
+	}
+	t.tasks[key.index] = taskCanceled
 }
